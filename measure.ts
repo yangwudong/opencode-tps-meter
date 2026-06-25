@@ -38,3 +38,39 @@ export function calibrationFactor(ratios: number[]): number {
   if (ratios.length === 0) return 1.0
   return median(ratios)
 }
+
+export type DeltaSample = {
+  at: number
+  rawTokens: number
+}
+
+const WINDOW_MS = 5_000
+const STALE_MS = 1_500
+const MIN_DURATION_MS = 250
+const MAX_SINGLE_SAMPLE_MS = 1_000
+
+export function calculateLiveTps(
+  samples: DeltaSample[],
+  now: number,
+  calibration: number,
+): number | undefined {
+  if (samples.length === 0) return undefined
+
+  const cutoff = now - WINDOW_MS
+  const relevant = samples.filter((s) => s.at >= cutoff)
+  if (relevant.length === 0) return undefined
+
+  const last = relevant[relevant.length - 1]
+  if (now - last.at > STALE_MS) return undefined
+
+  let durationMs: number
+  if (relevant.length === 1) {
+    durationMs = Math.min(Math.max(now - relevant[0].at, MIN_DURATION_MS), MAX_SINGLE_SAMPLE_MS)
+  } else {
+    const oldest = relevant[0]
+    durationMs = Math.max(last.at - oldest.at, MIN_DURATION_MS)
+  }
+
+  const totalRaw = relevant.reduce((sum, s) => sum + s.rawTokens, 0)
+  return (totalRaw * calibration) / (durationMs / 1000)
+}

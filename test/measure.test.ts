@@ -6,7 +6,9 @@ import {
   speedTier,
   median,
   calibrationFactor,
+  calculateLiveTps,
   type SpeedTier,
+  type DeltaSample,
 } from "../measure.ts"
 
 describe("estimateTokens", () => {
@@ -120,5 +122,77 @@ describe("calibrationFactor", () => {
 
   it("returns the average of two middle values for even count", () => {
     expect(calibrationFactor([1.0, 1.2, 1.4, 1.6])).toBe(1.3)
+  })
+})
+
+describe("calculateLiveTps", () => {
+  const now = 10_000
+
+  it("returns undefined for empty samples", () => {
+    expect(calculateLiveTps([], now, 1.0)).toBeUndefined()
+  })
+
+  it("returns undefined when all samples are outside the window", () => {
+    const samples: DeltaSample[] = [
+      { at: now - 6_000, rawTokens: 10 },
+    ]
+    expect(calculateLiveTps(samples, now, 1.0)).toBeUndefined()
+  })
+
+  it("returns undefined when the latest sample is stale (>1.5s old)", () => {
+    const samples: DeltaSample[] = [
+      { at: now - 2_000, rawTokens: 10 },
+    ]
+    expect(calculateLiveTps(samples, now, 1.0)).toBeUndefined()
+  })
+
+  it("calculates TPS from wall-clock duration across multiple samples", () => {
+    // 3 samples over 2 seconds, 50 raw tokens total, calibration 1.0
+    // duration = 2s → TPS = 50/2 = 25
+    const samples: DeltaSample[] = [
+      { at: now - 2_000, rawTokens: 10 },
+      { at: now - 1_000, rawTokens: 20 },
+      { at: now, rawTokens: 20 },
+    ]
+    expect(calculateLiveTps(samples, now, 1.0)).toBeCloseTo(25, 1)
+  })
+
+  it("applies calibration factor to raw tokens", () => {
+    // Same as above but calibration 2.0 → TPS = 50*2/2 = 50
+    const samples: DeltaSample[] = [
+      { at: now - 2_000, rawTokens: 10 },
+      { at: now - 1_000, rawTokens: 20 },
+      { at: now, rawTokens: 20 },
+    ]
+    expect(calculateLiveTps(samples, now, 2.0)).toBeCloseTo(50, 1)
+  })
+
+  it("uses minimum 250ms duration for single sample to avoid inflation", () => {
+    // Single sample 500ms ago, 10 raw tokens, calibration 1.0
+    // duration = 500ms → TPS = 10/0.5 = 20
+    const samples: DeltaSample[] = [
+      { at: now - 500, rawTokens: 10 },
+    ]
+    expect(calculateLiveTps(samples, now, 1.0)).toBeCloseTo(20, 1)
+  })
+
+  it("caps single-sample duration at 1000ms", () => {
+    // Single sample 1200ms ago: within window (5s), not stale (<1.5s)
+    // duration capped at 1000ms → TPS = 5/1.0 = 5
+    const samples: DeltaSample[] = [
+      { at: now - 1_200, rawTokens: 5 },
+    ]
+    expect(calculateLiveTps(samples, now, 1.0)).toBeCloseTo(5, 1)
+  })
+
+  it("filters to only samples within the 5-second window", () => {
+    // Mix of old and recent samples
+    const samples: DeltaSample[] = [
+      { at: now - 6_000, rawTokens: 100 },  // outside window, ignored
+      { at: now - 2_000, rawTokens: 10 },   // inside window
+      { at: now, rawTokens: 20 },           // inside window
+    ]
+    // 30 tokens over 2 seconds → TPS = 15
+    expect(calculateLiveTps(samples, now, 1.0)).toBeCloseTo(15, 1)
   })
 })
