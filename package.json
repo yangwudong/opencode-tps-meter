@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "opencode-tps-meter",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./tui": {
+      "import": "./tui.tsx"
+    }
+  },
+  "engines": {
+    "opencode": ">=1.4.3"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.4.3",
+    "@opentui/core": "^0.4.2",
+    "@opentui/solid": "^0.4.2",
+    "solid-js": "^1.9.12"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4",
+    "typescript": "^5.9.2"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  }
+}
