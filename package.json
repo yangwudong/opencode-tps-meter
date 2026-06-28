@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@jack-yang/opencode-tps-meter",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Live TPS/AVG/TTFT meter plugin for OpenCode TUI with color-coded speed tiers",
   "type": "module",
   "exports": {
