@@ -2,94 +2,57 @@
 import type { TextRenderable, RGBA } from "@opentui/core"
 import type { TuiPlugin, TuiPluginModule, TuiThemeCurrent } from "@opencode-ai/plugin/tui"
 import { onCleanup } from "solid-js"
-import {
-  estimateTokens,
-  formatTps,
-  formatTtft,
-  speedTier,
-  calibrationFactor,
-  calculateLiveTps,
-  type DeltaSample,
-  type SpeedTier,
-} from "./measure.ts"
 
-const WINDOW_MS = 5_000
-const MAX_TRACKED_MESSAGES = 24
-const MAX_CALIBRATION_RATIOS = 10
-
-type StepTiming = {
-  sessionID: string
-  assistantMessageID: string
-  stepStartedAt?: number
-  firstDeltaAt?: number
-  lastDeltaAt?: number
-  estimatedTokens: number
-}
+type DeltaSample = { at: number; rawTokens: number }
 
 type SessionStats = {
   totalOutputTokens: number
-  totalGenerationMs: number
-  totalTtftMs: number
-  stepCount: number
+  totalDurationMs: number
   calibrationRatios: number[]
 }
 
 type TrackerState = {
   useV2Events: boolean
   samplesBySession: Record<string, DeltaSample[]>
-  stepsByMessage: Record<string, StepTiming[]>
-  activeStepBySession: Record<string, StepTiming | undefined>
+  messageCreatedAt: Record<string, number>
+  firstDeltaByMessage: Record<string, number>
+  lastDeltaByMessage: Record<string, number>
+  estimatedTokensByMessage: Record<string, number>
+  liveTtftBySession: Record<string, number>
+  activeMessageBySession: Record<string, string | undefined>
   statsBySession: Record<string, SessionStats>
 }
 
 type Listener = () => void
 
-function newSessionStats(): SessionStats {
-  return {
-    totalOutputTokens: 0,
-    totalGenerationMs: 0,
-    totalTtftMs: 0,
-    stepCount: 0,
-    calibrationRatios: [],
-  }
+const WINDOW_MS = 5_000
+const STALE_MS = 1_500
+const MIN_DURATION_MS = 1_000
+const MAX_CALIBRATION_RATIOS = 10
+
+function estimateTokens(delta: string): number {
+  return Math.max(1, Math.ceil(Buffer.byteLength(delta, "utf8") / 4))
 }
 
-function appendSample(
-  tracker: TrackerState,
-  sessionID: string,
-  assistantMessageID: string,
-  at: number,
-  delta: string,
-) {
-  const rawTokens = estimateTokens(delta)
-  const cutoff = at - WINDOW_MS
-  const existing = tracker.samplesBySession[sessionID] ?? []
-  tracker.samplesBySession[sessionID] = [
-    ...existing.filter((s) => s.at >= cutoff),
-    { at, rawTokens },
-  ]
-
-  const step = tracker.activeStepBySession[sessionID]
-  if (step) {
-    step.estimatedTokens += rawTokens
-    if (step.firstDeltaAt === undefined) step.firstDeltaAt = at
-    step.lastDeltaAt = at
-  }
+function formatTps(value: number): string | undefined {
+  if (!Number.isFinite(value) || value <= 0) return undefined
+  if (value >= 100) return Math.round(value).toString()
+  if (value >= 10) return value.toFixed(1)
+  return value.toFixed(2)
 }
 
-function clearLiveSamples(tracker: TrackerState, sessionID: string) {
-  delete tracker.samplesBySession[sessionID]
+function formatTtft(valueMs: number): string | undefined {
+  if (!Number.isFinite(valueMs) || valueMs < 0) return undefined
+  return `${(valueMs / 1000).toFixed(1)}s`
 }
 
-function getOrCreateStats(tracker: TrackerState, sessionID: string): SessionStats {
-  let stats = tracker.statsBySession[sessionID]
-  if (!stats) {
-    stats = newSessionStats()
-    tracker.statsBySession[sessionID] = stats
-  }
-  return stats
+type SpeedTier = "slow" | "normal" | "fast" | "faster"
+function speedTier(tps: number): SpeedTier {
+  if (tps < 20) return "slow"
+  if (tps < 50) return "normal"
+  if (tps < 100) return "fast"
+  return "faster"
 }
-
 function tierColor(tier: SpeedTier, theme: TuiThemeCurrent): RGBA {
   switch (tier) {
     case "slow": return theme.error
@@ -97,6 +60,65 @@ function tierColor(tier: SpeedTier, theme: TuiThemeCurrent): RGBA {
     case "fast": return theme.success
     case "faster": return theme.accent
   }
+}
+function tpsColor(tps: number, theme: TuiThemeCurrent): RGBA {
+  return tierColor(speedTier(tps), theme)
+}
+
+type TtftTier = "fast" | "ok" | "slow"
+function ttftTier(ms: number): TtftTier {
+  if (ms < 500) return "fast"
+  if (ms < 2000) return "ok"
+  return "slow"
+}
+function ttftColor(ms: number, theme: TuiThemeCurrent): RGBA {
+  switch (ttftTier(ms)) {
+    case "fast": return theme.success
+    case "ok": return theme.warning
+    case "slow": return theme.error
+  }
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return 1.0
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  if (sorted.length % 2 !== 0) return sorted[mid]
+  return Math.round(((sorted[mid - 1] + sorted[mid]) / 2) * 1e10) / 1e10
+}
+function calibrationFactor(ratios: number[]): number {
+  if (ratios.length === 0) return 1.0
+  return median(ratios)
+}
+
+function calculateLiveTps(samples: DeltaSample[], now: number, calibration: number): number | undefined {
+  if (samples.length === 0) return undefined
+  const cutoff = now - WINDOW_MS
+  const relevant = samples.filter((s) => s.at >= cutoff)
+  if (relevant.length === 0) return undefined
+  const last = relevant[relevant.length - 1]
+  if (now - last.at > STALE_MS) return undefined
+  const oldest = relevant[0]
+  const durationMs = Math.max(now - oldest.at, MIN_DURATION_MS)
+  const totalRaw = relevant.reduce((sum, s) => sum + s.rawTokens, 0)
+  return (totalRaw * calibration) / (durationMs / 1000)
+}
+
+function recordDelta(tracker: TrackerState, sessionID: string, messageID: string, at: number, delta: string) {
+  const rawTokens = estimateTokens(delta)
+  const cutoff = at - WINDOW_MS
+  const existing = tracker.samplesBySession[sessionID] ?? []
+  tracker.samplesBySession[sessionID] = [...existing.filter((s) => s.at >= cutoff), { at, rawTokens }]
+  if (tracker.firstDeltaByMessage[messageID] === undefined) {
+    tracker.firstDeltaByMessage[messageID] = at
+    const created = tracker.messageCreatedAt[messageID]
+    if (created !== undefined) {
+      tracker.liveTtftBySession[sessionID] = Math.max(0, at - created)
+    }
+  }
+  tracker.lastDeltaByMessage[messageID] = at
+  tracker.estimatedTokensByMessage[messageID] = (tracker.estimatedTokensByMessage[messageID] ?? 0) + rawTokens
+  tracker.activeMessageBySession[sessionID] = messageID
 }
 
 function MeterDisplay(props: {
@@ -108,31 +130,30 @@ function MeterDisplay(props: {
   let tpsRef: TextRenderable | undefined
   let avgRef: TextRenderable | undefined
   let ttftRef: TextRenderable | undefined
-
   const theme = props.api.theme.current
+  const muted = theme.textMuted
 
   const sync = () => {
     const stats = props.tracker.statsBySession[props.sessionID]
     const calibration = calibrationFactor(stats?.calibrationRatios ?? [])
     const samples = props.tracker.samplesBySession[props.sessionID] ?? []
-    const live = calculateLiveTps(samples, Date.now(), calibration)
-
-    const avg =
-      stats && stats.totalGenerationMs > 0
-        ? stats.totalOutputTokens / (stats.totalGenerationMs / 1000)
-        : undefined
-    const ttft =
-      stats && stats.stepCount > 0
-        ? stats.totalTtftMs / stats.stepCount
-        : undefined
+    const now = Date.now()
+    const live = calculateLiveTps(samples, now, calibration)
+    const avg = stats && stats.totalDurationMs > 0 ? stats.totalOutputTokens / (stats.totalDurationMs / 1000) : undefined
+    const ttft = props.tracker.liveTtftBySession[props.sessionID]
 
     if (tpsRef) {
       tpsRef.content = live !== undefined ? formatTps(live) ?? "--" : "--"
-      tpsRef.fg = live !== undefined ? tierColor(speedTier(live), theme) : theme.textMuted
+      tpsRef.fg = live !== undefined ? tpsColor(live, theme) : muted
     }
-    if (avgRef) avgRef.content = avg !== undefined ? formatTps(avg) ?? "--" : "--"
-    if (ttftRef) ttftRef.content = ttft !== undefined ? formatTtft(ttft) ?? "--" : "--"
-
+    if (avgRef) {
+      avgRef.content = avg !== undefined ? formatTps(avg) ?? "--" : "--"
+      avgRef.fg = avg !== undefined ? tpsColor(avg, theme) : muted
+    }
+    if (ttftRef) {
+      ttftRef.content = ttft !== undefined ? formatTtft(ttft) ?? "--" : "--"
+      ttftRef.fg = ttft !== undefined ? ttftColor(ttft, theme) : muted
+    }
     props.api.renderer.requestRender()
   }
 
@@ -141,27 +162,12 @@ function MeterDisplay(props: {
 
   return (
     <box flexDirection="row">
-      <text fg={theme.textMuted}>TPS </text>
-      <text
-        ref={(el: TextRenderable) => { tpsRef = el; sync() }}
-        fg={theme.textMuted}
-      >
-        --
-      </text>
-      <text fg={theme.textMuted}> | AVG </text>
-      <text
-        ref={(el: TextRenderable) => { avgRef = el; sync() }}
-        fg={theme.textMuted}
-      >
-        --
-      </text>
-      <text fg={theme.textMuted}> | TTFT </text>
-      <text
-        ref={(el: TextRenderable) => { ttftRef = el; sync() }}
-        fg={theme.textMuted}
-      >
-        --
-      </text>
+      <text fg={muted}>TPS </text>
+      <text ref={(el: TextRenderable) => { tpsRef = el; sync() }} fg={muted}>--</text>
+      <text fg={muted}> | AVG </text>
+      <text ref={(el: TextRenderable) => { avgRef = el; sync() }} fg={muted}>--</text>
+      <text fg={muted}> | TTFT </text>
+      <text ref={(el: TextRenderable) => { ttftRef = el; sync() }} fg={muted}>--</text>
     </box>
   )
 }
@@ -170,42 +176,27 @@ const tui: TuiPlugin = async (api) => {
   const tracker: TrackerState = {
     useV2Events: false,
     samplesBySession: {},
-    stepsByMessage: {},
-    activeStepBySession: {},
+    messageCreatedAt: {},
+    firstDeltaByMessage: {},
+    lastDeltaByMessage: {},
+    estimatedTokensByMessage: {},
+    liveTtftBySession: {},
+    activeMessageBySession: {},
     statsBySession: {},
   }
   const listeners = new Set<Listener>()
   const bump = () => { for (const l of listeners) l() }
-  const subscribe = (listener: Listener) => {
-    listeners.add(listener)
-    return () => { listeners.delete(listener) }
-  }
-
-  const onStepStarted = api.event.on("session.next.step.started", (evt) => {
-    const { sessionID, assistantMessageID, timestamp } = evt.properties
-    const step: StepTiming = {
-      sessionID,
-      assistantMessageID,
-      stepStartedAt: timestamp,
-      estimatedTokens: 0,
-    }
-    tracker.activeStepBySession[sessionID] = step
-    const steps = tracker.stepsByMessage[assistantMessageID] ?? []
-    tracker.stepsByMessage[assistantMessageID] = [...steps, step]
-    bump()
-  })
+  const subscribe = (listener: Listener) => { listeners.add(listener); return () => { listeners.delete(listener) } }
 
   const onTextDelta = api.event.on("session.next.text.delta", (evt) => {
     tracker.useV2Events = true
-    const { sessionID, assistantMessageID, timestamp, delta } = evt.properties
-    appendSample(tracker, sessionID, assistantMessageID, timestamp, delta)
+    recordDelta(tracker, evt.properties.sessionID, evt.properties.assistantMessageID, evt.properties.timestamp, evt.properties.delta)
     bump()
   })
 
   const onReasoningDelta = api.event.on("session.next.reasoning.delta", (evt) => {
     tracker.useV2Events = true
-    const { sessionID, assistantMessageID, timestamp, delta } = evt.properties
-    appendSample(tracker, sessionID, assistantMessageID, timestamp, delta)
+    recordDelta(tracker, evt.properties.sessionID, evt.properties.assistantMessageID, evt.properties.timestamp, evt.properties.delta)
     bump()
   })
 
@@ -214,136 +205,90 @@ const tui: TuiPlugin = async (api) => {
     if (evt.properties.field !== "text") return
     const parts = api.state.part(evt.properties.messageID)
     const part = parts.find((p) => p.id === evt.properties.partID)
-    if (!part) return
-    if (part.type !== "text" && part.type !== "reasoning") return
-    const { sessionID, messageID } = evt.properties
-    if (!tracker.activeStepBySession[sessionID]) {
-      const step: StepTiming = {
-        sessionID,
-        assistantMessageID: messageID,
-        estimatedTokens: 0,
-      }
-      tracker.activeStepBySession[sessionID] = step
-      const steps = tracker.stepsByMessage[messageID] ?? []
-      tracker.stepsByMessage[messageID] = [...steps, step]
-    }
-    appendSample(tracker, sessionID, messageID, Date.now(), evt.properties.delta)
+    if (!part || (part.type !== "text" && part.type !== "reasoning")) return
+    recordDelta(tracker, evt.properties.sessionID, evt.properties.messageID, Date.now(), evt.properties.delta)
     bump()
-  })
-
-  const onToolInputStarted = api.event.on("session.next.tool.input.started", (evt) => {
-    clearLiveSamples(tracker, evt.properties.sessionID)
-    bump()
-  })
-
-  const onPartUpdated = api.event.on("message.part.updated", (evt) => {
-    if (evt.properties.part.type !== "tool") return
-    const status = evt.properties.part.state.status
-    if (status === "running" || status === "completed" || status === "error") {
-      const sessionID = evt.properties.part.sessionID ?? evt.properties.sessionID
-      clearLiveSamples(tracker, sessionID)
-      bump()
-    }
   })
 
   const onMessageUpdated = api.event.on("message.updated", (evt) => {
     const info = evt.properties.info
     if (info.role !== "assistant") return
-    if (!info.time.completed) return
+
+    if (!info.time.completed) {
+      tracker.messageCreatedAt[info.id] = info.time.created
+      return
+    }
 
     const sessionID = info.sessionID ?? evt.properties.sessionID
-    const stats = getOrCreateStats(tracker, sessionID)
-    const steps = tracker.stepsByMessage[info.id] ?? []
-
-    let generationMs = 0
-    let totalTtftMs = 0
-    let stepCount = 0
-    let totalEstimated = 0
-
-    for (const step of steps) {
-      if (step.firstDeltaAt !== undefined && step.lastDeltaAt !== undefined) {
-        generationMs += step.lastDeltaAt - step.firstDeltaAt
-      }
-      if (step.stepStartedAt !== undefined && step.firstDeltaAt !== undefined) {
-        totalTtftMs += step.firstDeltaAt - step.stepStartedAt
-        stepCount++
-      }
-      totalEstimated += step.estimatedTokens
+    if (!tracker.statsBySession[sessionID]) {
+      tracker.statsBySession[sessionID] = { totalOutputTokens: 0, totalDurationMs: 0, calibrationRatios: [] }
     }
+    const stats = tracker.statsBySession[sessionID]!
 
     const actualTokens = info.tokens.output + info.tokens.reasoning
-
-    if (totalEstimated > 0 && actualTokens > 0) {
-      const ratio = Math.min(Math.max(actualTokens / totalEstimated, 0.3), 3.0)
-      stats.calibrationRatios = [...stats.calibrationRatios, ratio].slice(-MAX_CALIBRATION_RATIOS)
-    }
+    const firstDelta = tracker.firstDeltaByMessage[info.id]
+    const lastDelta = tracker.lastDeltaByMessage[info.id]
+    const generationMs = firstDelta !== undefined && lastDelta !== undefined
+      ? Math.max(lastDelta - firstDelta, MIN_DURATION_MS) : 0
 
     if (actualTokens > 0 && generationMs > 0) {
       stats.totalOutputTokens += actualTokens
-      stats.totalGenerationMs += generationMs
-    }
-    if (stepCount > 0) {
-      stats.totalTtftMs += totalTtftMs
-      stats.stepCount += stepCount
-    }
+      stats.totalDurationMs += generationMs
 
-    delete tracker.stepsByMessage[info.id]
-    delete tracker.activeStepBySession[sessionID]
-    clearLiveSamples(tracker, sessionID)
-
-    const trackedIds = Object.keys(tracker.stepsByMessage)
-    if (trackedIds.length > MAX_TRACKED_MESSAGES) {
-      for (const id of trackedIds.slice(0, trackedIds.length - MAX_TRACKED_MESSAGES)) {
-        delete tracker.stepsByMessage[id]
+      const estimated = tracker.estimatedTokensByMessage[info.id] ?? 0
+      if (estimated > 0) {
+        const ratio = Math.min(Math.max(actualTokens / estimated, 0.3), 3.0)
+        stats.calibrationRatios = [...stats.calibrationRatios, ratio].slice(-MAX_CALIBRATION_RATIOS)
       }
     }
 
+    delete tracker.estimatedTokensByMessage[info.id]
+    delete tracker.firstDeltaByMessage[info.id]
+    delete tracker.lastDeltaByMessage[info.id]
+    delete tracker.messageCreatedAt[info.id]
+    delete tracker.activeMessageBySession[sessionID]
+    delete tracker.samplesBySession[sessionID]
     bump()
+  })
+
+  const onToolInputStarted = api.event.on("session.next.tool.input.started", (evt) => {
+    delete tracker.samplesBySession[evt.properties.sessionID]
+    bump()
+  })
+
+  const onPartUpdated = api.event.on("message.part.updated", (evt) => {
+    if (evt.properties.part.type !== "tool") return
+    if (["running", "completed", "error"].includes(evt.properties.part.state.status)) {
+      delete tracker.samplesBySession[evt.properties.part.sessionID ?? evt.properties.sessionID]
+      bump()
+    }
   })
 
   const timer = setInterval(() => {
     const now = Date.now()
     const cutoff = now - WINDOW_MS
-    for (const [sessionID, samples] of Object.entries(tracker.samplesBySession)) {
+    for (const [sid, samples] of Object.entries(tracker.samplesBySession)) {
       const pruned = samples.filter((s) => s.at >= cutoff)
-      if (pruned.length !== samples.length) {
-        if (pruned.length > 0) tracker.samplesBySession[sessionID] = pruned
-        else delete tracker.samplesBySession[sessionID]
-      }
+      if (pruned.length > 0) tracker.samplesBySession[sid] = pruned
+      else delete tracker.samplesBySession[sid]
     }
     bump()
   }, 1000)
 
   api.lifecycle.onDispose(() => {
-    onStepStarted()
-    onTextDelta()
-    onReasoningDelta()
-    onPartDelta()
-    onToolInputStarted()
-    onPartUpdated()
-    onMessageUpdated()
+    onTextDelta(); onReasoningDelta(); onPartDelta()
+    onMessageUpdated(); onToolInputStarted(); onPartUpdated()
     clearInterval(timer)
   })
 
   api.slots.register({
     slots: {
       session_prompt_right(_ctx, value) {
-        return (
-          <MeterDisplay
-            api={api}
-            sessionID={value.session_id}
-            tracker={tracker}
-            subscribe={subscribe}
-          />
-        )
+        return <MeterDisplay api={api} sessionID={value.session_id} tracker={tracker} subscribe={subscribe} />
       },
     },
   })
 }
 
-const plugin: TuiPluginModule & { id: string } = {
-  id: "opencode-tps-meter",
-  tui,
-}
-
+const plugin: TuiPluginModule & { id: string } = { id: "opencode-tps-meter", tui }
 export default plugin

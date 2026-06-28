@@ -46,8 +46,7 @@ export type DeltaSample = {
 
 const WINDOW_MS = 5_000
 const STALE_MS = 1_500
-const MIN_DURATION_MS = 250
-const MAX_SINGLE_SAMPLE_MS = 1_000
+const MIN_DURATION_MS = 1_000
 
 export function calculateLiveTps(
   samples: DeltaSample[],
@@ -63,13 +62,8 @@ export function calculateLiveTps(
   const last = relevant[relevant.length - 1]
   if (now - last.at > STALE_MS) return undefined
 
-  let durationMs: number
-  if (relevant.length === 1) {
-    durationMs = Math.min(Math.max(now - relevant[0].at, MIN_DURATION_MS), MAX_SINGLE_SAMPLE_MS)
-  } else {
-    const oldest = relevant[0]
-    durationMs = Math.max(last.at - oldest.at, MIN_DURATION_MS)
-  }
+  const oldest = relevant[0]
+  const durationMs = Math.max(now - oldest.at, MIN_DURATION_MS)
 
   const totalRaw = relevant.reduce((sum, s) => sum + s.rawTokens, 0)
   return (totalRaw * calibration) / (durationMs / 1000)

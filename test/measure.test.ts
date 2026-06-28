@@ -146,9 +146,9 @@ describe("calculateLiveTps", () => {
     expect(calculateLiveTps(samples, now, 1.0)).toBeUndefined()
   })
 
-  it("calculates TPS from wall-clock duration across multiple samples", () => {
-    // 3 samples over 2 seconds, 50 raw tokens total, calibration 1.0
-    // duration = 2s → TPS = 50/2 = 25
+  it("calculates TPS from wall-clock duration (now - oldest)", () => {
+    // 3 samples, oldest 2s ago, latest at now
+    // duration = now - oldest = 2s → TPS = 50/2 = 25
     const samples: DeltaSample[] = [
       { at: now - 2_000, rawTokens: 10 },
       { at: now - 1_000, rawTokens: 20 },
@@ -157,8 +157,19 @@ describe("calculateLiveTps", () => {
     expect(calculateLiveTps(samples, now, 1.0)).toBeCloseTo(25, 1)
   })
 
+  it("uses now-oldest not last-oldest when latest sample is not at now", () => {
+    // Samples at now-3s and now-1s, now is current time
+    // duration = now - (now-3s) = 3s (not last-oldest = 2s)
+    // TPS = 30/3 = 10
+    const samples: DeltaSample[] = [
+      { at: now - 3_000, rawTokens: 10 },
+      { at: now - 1_000, rawTokens: 20 },
+    ]
+    expect(calculateLiveTps(samples, now, 1.0)).toBeCloseTo(10, 1)
+  })
+
   it("applies calibration factor to raw tokens", () => {
-    // Same as above but calibration 2.0 → TPS = 50*2/2 = 50
+    // Same samples, calibration 2.0 → TPS = 50*2/2 = 50
     const samples: DeltaSample[] = [
       { at: now - 2_000, rawTokens: 10 },
       { at: now - 1_000, rawTokens: 20 },
@@ -167,22 +178,22 @@ describe("calculateLiveTps", () => {
     expect(calculateLiveTps(samples, now, 2.0)).toBeCloseTo(50, 1)
   })
 
-  it("uses minimum 250ms duration for single sample to avoid inflation", () => {
-    // Single sample 500ms ago, 10 raw tokens, calibration 1.0
-    // duration = 500ms → TPS = 10/0.5 = 20
+  it("uses minimum 1000ms duration for single sample to avoid inflation", () => {
+    // Single sample 500ms ago, 10 raw tokens
+    // duration = max(500, 1000) = 1000ms → TPS = 10/1.0 = 10
     const samples: DeltaSample[] = [
       { at: now - 500, rawTokens: 10 },
     ]
-    expect(calculateLiveTps(samples, now, 1.0)).toBeCloseTo(20, 1)
+    expect(calculateLiveTps(samples, now, 1.0)).toBeCloseTo(10, 1)
   })
 
-  it("caps single-sample duration at 1000ms", () => {
+  it("uses actual elapsed time when above minimum for single sample", () => {
     // Single sample 1200ms ago: within window (5s), not stale (<1.5s)
-    // duration capped at 1000ms → TPS = 5/1.0 = 5
+    // duration = max(1200, 1000) = 1200ms → TPS = 5/1.2 ≈ 4.17
     const samples: DeltaSample[] = [
       { at: now - 1_200, rawTokens: 5 },
     ]
-    expect(calculateLiveTps(samples, now, 1.0)).toBeCloseTo(5, 1)
+    expect(calculateLiveTps(samples, now, 1.0)).toBeCloseTo(4.2, 0)
   })
 
   it("filters to only samples within the 5-second window", () => {
