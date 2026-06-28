@@ -1,6 +1,10 @@
 # opencode-tps-meter
 
+English | [中文](./README.zh-CN.md)
+
 A TUI plugin for [opencode](https://opencode.ai) that displays real-time LLM output speed metrics next to the session prompt.
+
+![](https://img.shields.io/npm/v/@jack-yang/opencode-tps-meter) ![](https://img.shields.io/npm/l/@jack-yang/opencode-tps-meter) ![](https://img.shields.io/github/stars/yangwudong/opencode-tps-meter)
 
 ## Display
 
@@ -33,14 +37,40 @@ TPS 42.5 | AVG 38.2 | TTFT 0.8s
 
 ## Installation
 
-This plugin must be configured in `tui.json` (not `opencode.json`).
+> **Important:** This plugin must be configured in `tui.json`, **not** `opencode.json`.
 
-### Option 1: Local file
+### Option 1: npm (recommended)
 
-1. Copy `tui.tsx` to your opencode config directory:
+Add `@jack-yang/opencode-tps-meter` to the `plugin` array in your `tui.json`:
+
+```json
+{
+  "plugin": [
+    "@jack-yang/opencode-tps-meter"
+  ]
+}
+```
+
+Config file location: `~/.config/opencode/tui.json`
+
+Restart opencode — that's it.
+
+### Option 2: GitHub
+
+```json
+{
+  "plugin": [
+    "git+https://github.com/yangwudong/opencode-tps-meter.git"
+  ]
+}
+```
+
+### Option 3: Local file
+
+1. Download [`tui.tsx`](./tui.tsx) to your opencode config directory:
 
 ```bash
-cp tui.tsx ~/.config/opencode/tps-meter.tsx
+curl -o ~/.config/opencode/tps-meter.tsx https://raw.githubusercontent.com/yangwudong/opencode-tps-meter/main/tui.tsx
 ```
 
 2. Add to `~/.config/opencode/tui.json`:
@@ -55,10 +85,6 @@ cp tui.tsx ~/.config/opencode/tps-meter.tsx
 
 3. Restart opencode.
 
-### Option 2: Project-local
-
-Add a `.opencode/tui.json` in your project root with the same plugin path (relative to the config file location).
-
 ## How It Works
 
 ### Live TPS
@@ -69,7 +95,7 @@ Token estimation uses `ceil(byteLength / 4)` with a **calibration factor**: when
 
 ### AVG
 
-Session-wide cumulative average from all completed messages: `sum(actual tokens) / sum(generation durations)`. Updates only when a message completes. Generation duration = `last delta - first delta` per message (excludes tool execution time and TTFT).
+Session-wide cumulative average from all completed messages: `sum(actual tokens) / sum(generation durations)`. Updates when a message completes. Generation duration = `last delta - first delta` per message (excludes tool execution time and TTFT).
 
 ### TTFT
 
@@ -78,16 +104,17 @@ Time from message creation (`info.time.created`) to the first text/reasoning del
 ## Development
 
 ```bash
+git clone https://github.com/yangwudong/opencode-tps-meter.git
+cd opencode-tps-meter
 npm install
 npm test
 ```
 
-Pure measurement functions (`measure.ts`) have 29 unit tests. The TUI plugin (`tui.tsx`) is a standalone single file (all functions inline) for direct deployment — copy it to your config directory.
+Pure measurement functions (`measure.ts`) have 29 unit tests. The TUI plugin (`tui.tsx`) is a standalone single file (all functions inline) for direct deployment.
 
 ## Requirements
 
 - opencode >= 1.4.3
-- The plugin file must be placed where `tui.json` can reference it via relative path
 
 ## License
 
