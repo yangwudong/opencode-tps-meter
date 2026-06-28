@@ -1,7 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "opencode-tps-meter",
+  "name": "@jack-yang/opencode-tps-meter",
   "version": "0.1.0",
+  "description": "Live TPS/AVG/TTFT meter plugin for OpenCode TUI with color-coded speed tiers",
   "type": "module",
   "exports": {
     "./tui": {
@@ -24,5 +25,29 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest"
+  },
+  "files": [
+    "tui.tsx",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tui",
+    "tps",
+    "llm",
+    "ai"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yangwudong/opencode-tps-meter.git"
+  },
+  "homepage": "https://github.com/yangwudong/opencode-tps-meter#readme",
+  "bugs": {
+    "url": "https://github.com/yangwudong/opencode-tps-meter/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
