@@ -51,6 +51,7 @@
     "access": "public"
   },
   "overrides": {
-    "@babel/core": "^7.29.6"
+    "@babel/core": "^7.29.6",
+    "brace-expansion": "^5.0.8"
   }
 }

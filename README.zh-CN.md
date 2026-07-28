@@ -4,7 +4,7 @@
 
 一个 [opencode](https://opencode.ai) 的 TUI 插件，在输入框旁边实时显示 LLM 输出速度指标。
 
-![](https://img.shields.io/npm/v/@jack-yang/opencode-tps-meter) ![](https://img.shields.io/npm/l/@jack-yang/opencode-tps-meter) ![](https://img.shields.io/github/stars/yangwudong/opencode-tps-meter) ![](https://img.shields.io/badge/opencode-1.17.20-tested-blue)
+[![npm version](https://img.shields.io/npm/v/@jack-yang/opencode-tps-meter)](https://www.npmjs.com/package/@jack-yang/opencode-tps-meter) [![license](https://img.shields.io/npm/l/@jack-yang/opencode-tps-meter)](https://www.npmjs.com/package/@jack-yang/opencode-tps-meter) [![stars](https://img.shields.io/github/stars/yangwudong/opencode-tps-meter)](https://github.com/yangwudong/opencode-tps-meter) ![opencode](https://img.shields.io/badge/opencode-1.17.20-tested-blue)
 
 ## 显示效果
 

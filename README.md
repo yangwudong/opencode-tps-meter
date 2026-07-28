@@ -4,7 +4,7 @@ English | [中文](./README.zh-CN.md)
 
 A TUI plugin for [opencode](https://opencode.ai) that displays real-time LLM output speed metrics next to the session prompt.
 
-![](https://img.shields.io/npm/v/@jack-yang/opencode-tps-meter) ![](https://img.shields.io/npm/l/@jack-yang/opencode-tps-meter) ![](https://img.shields.io/github/stars/yangwudong/opencode-tps-meter) ![](https://img.shields.io/badge/opencode-1.17.20-tested-blue)
+[![npm version](https://img.shields.io/npm/v/@jack-yang/opencode-tps-meter)](https://www.npmjs.com/package/@jack-yang/opencode-tps-meter) [![license](https://img.shields.io/npm/l/@jack-yang/opencode-tps-meter)](https://www.npmjs.com/package/@jack-yang/opencode-tps-meter) [![stars](https://img.shields.io/github/stars/yangwudong/opencode-tps-meter)](https://github.com/yangwudong/opencode-tps-meter) ![opencode](https://img.shields.io/badge/opencode-1.17.20-tested-blue)
 
 ## Display
 
