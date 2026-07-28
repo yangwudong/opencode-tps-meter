@@ -190,9 +190,7 @@ function MeterDisplay(props: {
   spinnerCells: () => { glyph: string; color: RGBA }[]
   subscribe: (listener: Listener) => () => void
 }) {
-  const cellCount = props.config.spinner.enabled ? props.config.spinner.cells : 0
-  const spinRefs: (TextRenderable | undefined)[] = []
-  let sepRef: TextRenderable | undefined
+  let particleRef: TextRenderable | undefined
   let tpsRef: TextRenderable | undefined
   let avgRef: TextRenderable | undefined
   let ttftRef: TextRenderable | undefined
@@ -208,18 +206,14 @@ function MeterDisplay(props: {
     const avg = stats && stats.totalDurationMs > 0 ? stats.totalOutputTokens / (stats.totalDurationMs / 1000) : undefined
     const ttft = props.tracker.liveTtftBySession[props.sessionID]
     const thinkingNow = props.tracker.thinkingBySession[props.sessionID] === true && props.config.spinner.enabled
-    if (thinkingNow) {
-      if (sepRef) sepRef.content = " "
-      const cells = props.spinnerCells()
-      for (let i = 0; i < spinRefs.length; i++) {
-        const ref = spinRefs[i]
-        if (!ref) continue
-        const cell = cells[i]
-        if (cell) { ref.content = cell.glyph; ref.fg = cell.color }
+    if (particleRef) {
+      if (thinkingNow) {
+        const cells = props.spinnerCells()
+        particleRef.content = " " + cells.map((c) => c.glyph).join("")
+        particleRef.fg = cells[0]?.color ?? muted
+      } else {
+        particleRef.content = ""
       }
-    } else {
-      if (sepRef) sepRef.content = ""
-      for (const ref of spinRefs) if (ref) ref.content = ""
     }
     if (tpsRef) {
       tpsRef.content = live !== undefined ? formatTps(live) ?? "--" : "--"
@@ -247,10 +241,7 @@ function MeterDisplay(props: {
       <text ref={(el: TextRenderable) => { avgRef = el; sync() }} fg={muted}>--</text>
       <text fg={muted}> | TTFT </text>
       <text ref={(el: TextRenderable) => { ttftRef = el; sync() }} fg={muted}>--</text>
-      <text ref={(el: TextRenderable) => { sepRef = el; sync() }} fg={muted}></text>
-      {Array.from({ length: cellCount }).map((_, i) => (
-        <text ref={(el: TextRenderable) => { spinRefs[i] = el; sync() }} fg={muted}></text>
-      ))}
+      <text ref={(el: TextRenderable) => { particleRef = el; sync() }} fg={muted}></text>
     </box>
   )
 }
