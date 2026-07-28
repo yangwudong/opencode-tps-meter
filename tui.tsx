@@ -3,7 +3,7 @@ import { RGBA } from "@opentui/core"
 import type { TextRenderable } from "@opentui/core"
 import type { TuiPlugin, TuiPluginModule, TuiThemeCurrent } from "@opencode-ai/plugin/tui"
 import type { PluginOptions } from "@opencode-ai/plugin"
-import { createSignal, onCleanup, Show } from "solid-js"
+import { onCleanup } from "solid-js"
 
 type DeltaSample = { at: number; rawTokens: number }
 
@@ -192,7 +192,7 @@ function MeterDisplay(props: {
 }) {
   const cellCount = props.config.spinner.enabled ? props.config.spinner.cells : 0
   const spinRefs: (TextRenderable | undefined)[] = []
-  const [thinking, setThinking] = createSignal(false)
+  let sepRef: TextRenderable | undefined
   let tpsRef: TextRenderable | undefined
   let avgRef: TextRenderable | undefined
   let ttftRef: TextRenderable | undefined
@@ -208,8 +208,8 @@ function MeterDisplay(props: {
     const avg = stats && stats.totalDurationMs > 0 ? stats.totalOutputTokens / (stats.totalDurationMs / 1000) : undefined
     const ttft = props.tracker.liveTtftBySession[props.sessionID]
     const thinkingNow = props.tracker.thinkingBySession[props.sessionID] === true && props.config.spinner.enabled
-    setThinking(thinkingNow)
     if (thinkingNow) {
+      if (sepRef) sepRef.content = " "
       const cells = props.spinnerCells()
       for (let i = 0; i < spinRefs.length; i++) {
         const ref = spinRefs[i]
@@ -217,6 +217,9 @@ function MeterDisplay(props: {
         const cell = cells[i]
         if (cell) { ref.content = cell.glyph; ref.fg = cell.color }
       }
+    } else {
+      if (sepRef) sepRef.content = ""
+      for (const ref of spinRefs) if (ref) ref.content = ""
     }
     if (tpsRef) {
       tpsRef.content = live !== undefined ? formatTps(live) ?? "--" : "--"
@@ -244,12 +247,10 @@ function MeterDisplay(props: {
       <text ref={(el: TextRenderable) => { avgRef = el; sync() }} fg={muted}>--</text>
       <text fg={muted}> | TTFT </text>
       <text ref={(el: TextRenderable) => { ttftRef = el; sync() }} fg={muted}>--</text>
-      <Show when={thinking()}>
-        <text fg={muted}> </text>
-        {Array.from({ length: cellCount }).map((_, i) => (
-          <text ref={(el: TextRenderable) => { spinRefs[i] = el; sync() }} fg={muted}></text>
-        ))}
-      </Show>
+      <text ref={(el: TextRenderable) => { sepRef = el; sync() }} fg={muted}></text>
+      {Array.from({ length: cellCount }).map((_, i) => (
+        <text ref={(el: TextRenderable) => { spinRefs[i] = el; sync() }} fg={muted}></text>
+      ))}
     </box>
   )
 }
