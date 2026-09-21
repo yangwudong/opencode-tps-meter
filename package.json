@@ -19,7 +19,7 @@
     "solid-js": "^1.9.12"
   },
   "devDependencies": {
-    "vitest": "^3.2.4",
+    "vitest": "^5.0.0",
     "typescript": "^5.9.2"
   },
   "scripts": {
@@ -52,6 +52,6 @@
   },
   "overrides": {
     "@babel/core": "^7.29.6",
-    "brace-expansion": "^5.0.8"
+    "brace-expansion": "^5.0.9"
   }
 }
