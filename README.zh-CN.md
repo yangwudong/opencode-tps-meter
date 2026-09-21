@@ -4,7 +4,7 @@
 
 一个 [opencode](https://opencode.ai) 的 TUI 插件，在输入框旁边实时显示 LLM 输出速度指标。
 
-[![npm version](https://img.shields.io/npm/v/@jack-yang/opencode-tps-meter)](https://www.npmjs.com/package/@jack-yang/opencode-tps-meter) [![license](https://img.shields.io/npm/l/@jack-yang/opencode-tps-meter)](https://www.npmjs.com/package/@jack-yang/opencode-tps-meter) [![stars](https://img.shields.io/github/stars/yangwudong/opencode-tps-meter)](https://github.com/yangwudong/opencode-tps-meter) ![opencode](https://img.shields.io/badge/opencode-1.17.20-tested-blue)
+[![npm version](https://img.shields.io/npm/v/@jack-yang/opencode-tps-meter)](https://www.npmjs.com/package/@jack-yang/opencode-tps-meter) [![license](https://img.shields.io/npm/l/@jack-yang/opencode-tps-meter)](https://www.npmjs.com/package/@jack-yang/opencode-tps-meter) [![stars](https://img.shields.io/github/stars/yangwudong/opencode-tps-meter)](https://github.com/yangwudong/opencode-tps-meter) ![opencode](https://img.shields.io/badge/opencode-1.x%20%2F%202.x-blue)
 
 ## 显示效果
 
@@ -44,23 +44,42 @@ TPS 42.5 | AVG 38.2 | TTFT 0.8s ⠒⠑⠂
 
 ## 安装
 
-> **注意：** 本插件必须配置在 `tui.json` 中，**不是** `opencode.json`。
+一个包同时支持 opencode 1.x 和 2.x，按你的版本选择对应方式。
+
+> **注意（opencode 1.x）：** 插件必须配置在 `tui.json` 中，**不是** `opencode.json`。
+> **opencode 2.x：** 终端客户端插件配置在 `cli.json` 的 `plugins` 键下。升级到 2.x 时，`tui.json` 会被自动迁移。
 
 ### 一条命令（推荐）
 
 ```bash
+# opencode 1.x
 opencode plugin @jack-yang/opencode-tps-meter -g
+
+# opencode 2.x
+opencode plugin add @jack-yang/opencode-tps-meter
 ```
 
-安装插件并更新配置。重启 opencode 即可。（使用默认配置；如需自定义，见下方[配置](#配置)的元组形式。）
+安装插件并更新配置。重启 opencode 即可。（使用默认配置；如需自定义，见下方[配置](#配置)。）
 
-### 手动：npm
+### 手动：npm（opencode 1.x）
 
 在 `~/.config/opencode/tui.json` 的 `plugin` 数组中添加 `@jack-yang/opencode-tps-meter`：
 
 ```json
 {
   "plugin": [
+    "@jack-yang/opencode-tps-meter"
+  ]
+}
+```
+
+### 手动：npm（opencode 2.x）
+
+在 `~/.config/opencode/cli.json` 的 `plugins` 数组中添加：
+
+```json
+{
+  "plugins": [
     "@jack-yang/opencode-tps-meter"
   ]
 }
@@ -98,7 +117,9 @@ curl -o ~/.config/opencode/tps-meter.tsx https://raw.githubusercontent.com/yangw
 
 ## 配置
 
-所有配置项都是可选的——默认值即开即用。通过 `tui.json` 的元组形式传入：
+所有配置项都是可选的——默认值即开即用。
+
+**opencode 1.x** —— `tui.json` 的元组形式：
 
 ```json
 {
@@ -119,6 +140,22 @@ curl -o ~/.config/opencode/tps-meter.tsx https://raw.githubusercontent.com/yangw
 }
 ```
 
+**opencode 2.x** —— `cli.json` 的对象形式（配置项相同）：
+
+```json
+{
+  "plugins": [
+    {
+      "package": "@jack-yang/opencode-tps-meter",
+      "options": {
+        "spinner": { "theme": "tech", "cells": 6 },
+        "tiers": { "tps": { "slow": 20, "normal": 50, "fast": 100 } }
+      }
+    }
+  ]
+}
+```
+
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
 | `spinner.theme` | `"tech"` | 配色预设：`"tech"`（青→蓝→紫）或 `"red"`（KITT 风格红）。`"none"` 关闭思考粒子流。 |
@@ -127,8 +164,9 @@ curl -o ~/.config/opencode/tps-meter.tsx https://raw.githubusercontent.com/yangw
 | `spinner.cells` | `6` | 粒子流格数（宽度）。 |
 | `tiers.tps` | `{20,50,100}` | TPS/AVG 阈值（慢/正常/快，单位 TPS）；超过 fast 为"很快"。 |
 | `tiers.ttft` | `{10000,20000}` | TTFT 阈值（毫秒，快/正常）；超过 ok 为"慢"。 |
+| `slot` | `"prompt.footer.status"` | 仅 opencode 2.x：仪表渲染到的 TUI slot。 |
 
-> 一条命令安装（`opencode plugin ...`）使用默认值；如需自定义，改用上面的元组形式。
+> 一条命令安装（`opencode plugin ...`）使用默认值；如需自定义，改用上面的元组/对象形式。
 
 ## 工作原理
 
@@ -159,7 +197,7 @@ npm test
 
 ## 环境要求
 
-- opencode >= 1.4.3（已在 1.17.20 测试）
+- opencode 1.x >= 1.4.3（已在 1.17.20 / 1.18.30 测试）或 opencode 2.x
 
 ## 许可证
 

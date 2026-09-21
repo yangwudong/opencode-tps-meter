@@ -4,7 +4,7 @@ English | [中文](./README.zh-CN.md)
 
 A TUI plugin for [opencode](https://opencode.ai) that displays real-time LLM output speed metrics next to the session prompt.
 
-[![npm version](https://img.shields.io/npm/v/@jack-yang/opencode-tps-meter)](https://www.npmjs.com/package/@jack-yang/opencode-tps-meter) [![license](https://img.shields.io/npm/l/@jack-yang/opencode-tps-meter)](https://www.npmjs.com/package/@jack-yang/opencode-tps-meter) [![stars](https://img.shields.io/github/stars/yangwudong/opencode-tps-meter)](https://github.com/yangwudong/opencode-tps-meter) ![opencode](https://img.shields.io/badge/opencode-1.17.20-tested-blue)
+[![npm version](https://img.shields.io/npm/v/@jack-yang/opencode-tps-meter)](https://www.npmjs.com/package/@jack-yang/opencode-tps-meter) [![license](https://img.shields.io/npm/l/@jack-yang/opencode-tps-meter)](https://www.npmjs.com/package/@jack-yang/opencode-tps-meter) [![stars](https://img.shields.io/github/stars/yangwudong/opencode-tps-meter)](https://github.com/yangwudong/opencode-tps-meter) ![opencode](https://img.shields.io/badge/opencode-1.x%20%2F%202.x-blue)
 
 ## Display
 
@@ -44,23 +44,42 @@ TPS 42.5 | AVG 38.2 | TTFT 0.8s ⠒⠑⠂
 
 ## Installation
 
-> **Important:** This plugin must be configured in `tui.json`, **not** `opencode.json`.
+One package supports both opencode 1.x and 2.x — pick the section for your version.
+
+> **Important (opencode 1.x):** the plugin must be configured in `tui.json`, **not** `opencode.json`.
+> **opencode 2.x:** terminal-client plugins live in `cli.json` (installed under the `plugins` key). If you upgrade to 2.x, your `tui.json` is migrated automatically.
 
 ### One command (recommended)
 
 ```bash
+# opencode 1.x
 opencode plugin @jack-yang/opencode-tps-meter -g
+
+# opencode 2.x
+opencode plugin add @jack-yang/opencode-tps-meter
 ```
 
 Installs the plugin and updates your config. Restart opencode — done. (Applies default options; to customize, use the tuple form in [Configuration](#configuration).)
 
-### Manual: npm
+### Manual: npm (opencode 1.x)
 
 Add `@jack-yang/opencode-tps-meter` to the `plugin` array in `~/.config/opencode/tui.json`:
 
 ```json
 {
   "plugin": [
+    "@jack-yang/opencode-tps-meter"
+  ]
+}
+```
+
+### Manual: npm (opencode 2.x)
+
+Add the package to the `plugins` array in `~/.config/opencode/cli.json`:
+
+```json
+{
+  "plugins": [
     "@jack-yang/opencode-tps-meter"
   ]
 }
@@ -98,7 +117,9 @@ curl -o ~/.config/opencode/tps-meter.tsx https://raw.githubusercontent.com/yangw
 
 ## Configuration
 
-All options are optional — defaults are sane. Pass them via the tuple form in `tui.json`:
+All options are optional — defaults are sane.
+
+**opencode 1.x** — tuple form in `tui.json`:
 
 ```json
 {
@@ -119,6 +140,22 @@ All options are optional — defaults are sane. Pass them via the tuple form in 
 }
 ```
 
+**opencode 2.x** — object form in `cli.json` (same options):
+
+```json
+{
+  "plugins": [
+    {
+      "package": "@jack-yang/opencode-tps-meter",
+      "options": {
+        "spinner": { "theme": "tech", "cells": 6 },
+        "tiers": { "tps": { "slow": 20, "normal": 50, "fast": 100 } }
+      }
+    }
+  ]
+}
+```
+
 | Option | Default | Description |
 |---|---|---|
 | `spinner.theme` | `"tech"` | Color preset: `"tech"` (cyan→blue→purple) or `"red"` (KITT-style red). `"none"` disables the thinking stream. |
@@ -127,6 +164,7 @@ All options are optional — defaults are sane. Pass them via the tuple form in 
 | `spinner.cells` | `6` | Number of cells (width) of the thinking stream. |
 | `tiers.tps` | `{20,50,100}` | TPS/AVG thresholds (slow/normal/fast, in TPS); above `fast` is "faster". |
 | `tiers.ttft` | `{10000,20000}` | TTFT thresholds in ms (fast/ok); above `ok` is "slow". |
+| `slot` | `"prompt.footer.status"` | opencode 2.x only: which TUI slot the meter renders into. |
 
 ## How It Works
 
@@ -157,7 +195,7 @@ Pure measurement functions (`measure.ts`) have 29 unit tests. The TUI plugin (`t
 
 ## Requirements
 
-- opencode >= 1.4.3 (tested on 1.17.20)
+- opencode 1.x >= 1.4.3 (tested on 1.17.20 / 1.18.30) or opencode 2.x
 
 ## License
 

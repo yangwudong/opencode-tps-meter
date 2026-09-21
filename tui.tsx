@@ -106,22 +106,56 @@ function formatTtft(valueMs: number): string | undefined {
 }
 
 type SpeedTier = "slow" | "normal" | "fast" | "faster"
+type Palette = { muted: RGBA; error: RGBA; warning: RGBA; success: RGBA; accent: RGBA }
+
+type V2Event = { type: string; created: number; data: Record<string, any> }
+type V2Theme = {
+  text: {
+    muted: RGBA
+    feedback: Record<"error" | "warning" | "success" | "info", { base: RGBA; muted: RGBA }>
+  }
+  hue: Record<string, Partial<Record<number, RGBA>>>
+}
+type V2Context = {
+  options: Record<string, unknown> | undefined
+  renderer: { requestRender(): void }
+  theme: V2Theme
+  data: { on(type: string, handler: (event: V2Event) => void): () => void }
+  ui: {
+    slot(claim: { append: string; render: (input: { sessionID?: string }) => unknown }): () => void
+    router: { current(): { type: string; sessionID?: string } }
+  }
+}
+
+function v1Palette(t: TuiThemeCurrent): Palette {
+  return { muted: t.textMuted, error: t.error, warning: t.warning, success: t.success, accent: t.accent }
+}
+function v2Palette(t: V2Theme): Palette {
+  return {
+    muted: t.text.muted,
+    error: t.text.feedback.error.base,
+    warning: t.text.feedback.warning.base,
+    success: t.text.feedback.success.base,
+    accent: t.hue.accent?.[500] ?? t.text.feedback.info.base,
+  }
+}
+
 function speedTier(tps: number, c: TpsTiers): SpeedTier {
   if (tps < c.slow) return "slow"
   if (tps < c.normal) return "normal"
   if (tps < c.fast) return "fast"
   return "faster"
 }
-function tierColor(tier: SpeedTier, theme: TuiThemeCurrent): RGBA {
+function tierColor(tier: SpeedTier, p: Palette): RGBA {
   switch (tier) {
-    case "slow": return theme.error
-    case "normal": return theme.warning
-    case "fast": return theme.success
-    case "faster": return theme.accent
+    case "slow": return p.error
+    case "normal": return p.warning
+    case "fast": return p.success
+    case "faster": return p.accent
   }
 }
-function tpsColor(tps: number, c: TpsTiers, theme: TuiThemeCurrent): RGBA {
-  return tierColor(speedTier(tps, c), theme)
+function tpsColor(tps: number, c: TpsTiers, p: Palette): RGBA {
+  return tierColor(speedTier(tps, c), p)
 }
 
 type TtftTier = "fast" | "ok" | "slow"
@@ -130,11 +164,11 @@ function ttftTier(ms: number, c: TtftTiers): TtftTier {
   if (ms < c.ok) return "ok"
   return "slow"
 }
-function ttftColor(ms: number, c: TtftTiers, theme: TuiThemeCurrent): RGBA {
+function ttftColor(ms: number, c: TtftTiers, p: Palette): RGBA {
   switch (ttftTier(ms, c)) {
-    case "fast": return theme.success
-    case "ok": return theme.warning
-    case "slow": return theme.error
+    case "fast": return p.success
+    case "ok": return p.warning
+    case "slow": return p.error
   }
 }
 
@@ -181,75 +215,17 @@ function recordDelta(tracker: TrackerState, sessionID: string, messageID: string
 
 const DOT_GLYPHS = ["⠁", "⠂", "⠄", "⠈", "⠐", "⠠", "⠒", "⠑", "⠡", "⠢", "⠤", "⠨", "⠰", "⠸", "⠘", "⠔", "⠖", "⠦"]
 
-function MeterDisplay(props: {
-  api: Parameters<TuiPlugin>[0]
-  sessionID: string
+type MeterCore = {
   tracker: TrackerState
-  config: ResolvedConfig
-  muted: RGBA
-  spinnerCells: () => { glyph: string; color: RGBA }[]
+  bump: () => void
   subscribe: (listener: Listener) => () => void
-}) {
-  let particleRef: TextRenderable | undefined
-  let tpsRef: TextRenderable | undefined
-  let avgRef: TextRenderable | undefined
-  let ttftRef: TextRenderable | undefined
-  const theme = props.api.theme.current
-  const muted = props.muted
-
-  const sync = () => {
-    const stats = props.tracker.statsBySession[props.sessionID]
-    const calibration = calibrationFactor(stats?.calibrationRatios ?? [])
-    const samples = props.tracker.samplesBySession[props.sessionID] ?? []
-    const now = Date.now()
-    const live = calculateLiveTps(samples, now, calibration)
-    const avg = stats && stats.totalDurationMs > 0 ? stats.totalOutputTokens / (stats.totalDurationMs / 1000) : undefined
-    const ttft = props.tracker.liveTtftBySession[props.sessionID]
-    const thinkingNow = props.tracker.thinkingBySession[props.sessionID] === true && props.config.spinner.enabled
-    if (particleRef) {
-      if (thinkingNow) {
-        const cells = props.spinnerCells()
-        particleRef.content = " " + cells.map((c) => c.glyph).join("")
-        particleRef.fg = cells[0]?.color ?? muted
-      } else {
-        particleRef.content = ""
-      }
-    }
-    if (tpsRef) {
-      tpsRef.content = live !== undefined ? formatTps(live) ?? "--" : "--"
-      tpsRef.fg = live !== undefined ? tpsColor(live, props.config.tps, theme) : muted
-    }
-    if (avgRef) {
-      avgRef.content = avg !== undefined ? formatTps(avg) ?? "--" : "--"
-      avgRef.fg = avg !== undefined ? tpsColor(avg, props.config.tps, theme) : muted
-    }
-    if (ttftRef) {
-      ttftRef.content = ttft !== undefined ? formatTtft(ttft) ?? "--" : "--"
-      ttftRef.fg = ttft !== undefined ? ttftColor(ttft, props.config.ttft, theme) : muted
-    }
-    props.api.renderer.requestRender()
-  }
-
-  const unsubscribe = props.subscribe(sync)
-  onCleanup(unsubscribe)
-
-  return (
-    <box flexDirection="row" alignItems="center">
-      <text fg={muted}>TPS </text>
-      <text ref={(el: TextRenderable) => { tpsRef = el; sync() }} fg={muted}>--</text>
-      <text fg={muted}> | AVG </text>
-      <text ref={(el: TextRenderable) => { avgRef = el; sync() }} fg={muted}>--</text>
-      <text fg={muted}> | TTFT </text>
-      <text ref={(el: TextRenderable) => { ttftRef = el; sync() }} fg={muted}>--</text>
-      <text ref={(el: TextRenderable) => { particleRef = el; sync() }} fg={muted}></text>
-    </box>
-  )
+  spinnerCells: () => { glyph: string; color: RGBA }[]
+  setThinking: (sessionID: string, value: boolean) => void
+  clearSessionLive: (sessionID: string) => void
+  dispose: () => void
 }
 
-const tui: TuiPlugin = async (api, options) => {
-  const config = resolveConfig(options)
-  const muted = api.theme.current.textMuted
-
+function createMeterCore(config: ResolvedConfig, muted: RGBA): MeterCore {
   const tracker: TrackerState = {
     useV2Events: false,
     samplesBySession: {},
@@ -315,6 +291,130 @@ const tui: TuiPlugin = async (api, options) => {
     if (value) initStream()
     syncSpinnerTimer()
   }
+  const clearSessionLive = (sessionID: string) => {
+    delete tracker.samplesBySession[sessionID]
+    setThinking(sessionID, false)
+  }
+
+  return {
+    tracker,
+    bump,
+    subscribe,
+    spinnerCells,
+    setThinking,
+    clearSessionLive,
+    dispose: () => {
+      if (spinnerTimer) clearInterval(spinnerTimer)
+    },
+  }
+}
+
+function recordMessageCompleted(core: MeterCore, info: {
+  id: string
+  sessionID: string
+  tokens: { output: number; reasoning: number }
+}) {
+  const tracker = core.tracker
+  const sessionID = info.sessionID
+  if (!tracker.statsBySession[sessionID]) {
+    tracker.statsBySession[sessionID] = { totalOutputTokens: 0, totalDurationMs: 0, calibrationRatios: [] }
+  }
+  const stats = tracker.statsBySession[sessionID]!
+
+  const actualTokens = info.tokens.output + info.tokens.reasoning
+  const firstDelta = tracker.firstDeltaByMessage[info.id]
+  const lastDelta = tracker.lastDeltaByMessage[info.id]
+  const generationMs = firstDelta !== undefined && lastDelta !== undefined
+    ? Math.max(lastDelta - firstDelta, MIN_DURATION_MS) : 0
+
+  if (actualTokens > 0 && generationMs > 0) {
+    stats.totalOutputTokens += actualTokens
+    stats.totalDurationMs += generationMs
+
+    const estimated = tracker.estimatedTokensByMessage[info.id] ?? 0
+    if (estimated > 0) {
+      const ratio = Math.min(Math.max(actualTokens / estimated, 0.3), 3.0)
+      stats.calibrationRatios = [...stats.calibrationRatios, ratio].slice(-MAX_CALIBRATION_RATIOS)
+    }
+  }
+
+  delete tracker.estimatedTokensByMessage[info.id]
+  delete tracker.firstDeltaByMessage[info.id]
+  delete tracker.lastDeltaByMessage[info.id]
+  delete tracker.messageCreatedAt[info.id]
+  delete tracker.activeMessageBySession[sessionID]
+  delete tracker.samplesBySession[sessionID]
+  core.setThinking(sessionID, false)
+}
+
+function MeterDisplay(props: {
+  requestRender: () => void
+  sessionID: string | undefined
+  tracker: TrackerState
+  config: ResolvedConfig
+  palette: Palette
+  spinnerCells: () => { glyph: string; color: RGBA }[]
+  subscribe: (listener: Listener) => () => void
+}) {
+  let particleRef: TextRenderable | undefined
+  let tpsRef: TextRenderable | undefined
+  let avgRef: TextRenderable | undefined
+  let ttftRef: TextRenderable | undefined
+  const p = props.palette
+
+  const sync = () => {
+    const stats = props.tracker.statsBySession[props.sessionID]
+    const calibration = calibrationFactor(stats?.calibrationRatios ?? [])
+    const samples = props.tracker.samplesBySession[props.sessionID] ?? []
+    const now = Date.now()
+    const live = calculateLiveTps(samples, now, calibration)
+    const avg = stats && stats.totalDurationMs > 0 ? stats.totalOutputTokens / (stats.totalDurationMs / 1000) : undefined
+    const ttft = props.tracker.liveTtftBySession[props.sessionID]
+    const thinkingNow = props.tracker.thinkingBySession[props.sessionID] === true && props.config.spinner.enabled
+    if (particleRef) {
+      if (thinkingNow) {
+        const cells = props.spinnerCells()
+        particleRef.content = " " + cells.map((c) => c.glyph).join("")
+        particleRef.fg = cells[0]?.color ?? p.muted
+      } else {
+        particleRef.content = ""
+      }
+    }
+    if (tpsRef) {
+      tpsRef.content = live !== undefined ? formatTps(live) ?? "--" : "--"
+      tpsRef.fg = live !== undefined ? tpsColor(live, props.config.tps, p) : p.muted
+    }
+    if (avgRef) {
+      avgRef.content = avg !== undefined ? formatTps(avg) ?? "--" : "--"
+      avgRef.fg = avg !== undefined ? tpsColor(avg, props.config.tps, p) : p.muted
+    }
+    if (ttftRef) {
+      ttftRef.content = ttft !== undefined ? formatTtft(ttft) ?? "--" : "--"
+      ttftRef.fg = ttft !== undefined ? ttftColor(ttft, props.config.ttft, p) : p.muted
+    }
+    props.requestRender()
+  }
+
+  const unsubscribe = props.subscribe(sync)
+  onCleanup(unsubscribe)
+
+  return (
+    <box flexDirection="row" alignItems="center">
+      <text fg={p.muted}>TPS </text>
+      <text ref={(el: TextRenderable) => { tpsRef = el; sync() }} fg={p.muted}>--</text>
+      <text fg={p.muted}> | AVG </text>
+      <text ref={(el: TextRenderable) => { avgRef = el; sync() }} fg={p.muted}>--</text>
+      <text fg={p.muted}> | TTFT </text>
+      <text ref={(el: TextRenderable) => { ttftRef = el; sync() }} fg={p.muted}>--</text>
+      <text ref={(el: TextRenderable) => { particleRef = el; sync() }} fg={p.muted}></text>
+    </box>
+  )
+}
+
+const tui: TuiPlugin = async (api, options) => {
+  const config = resolveConfig(options)
+  const core = createMeterCore(config, api.theme.current.textMuted)
+  const { tracker, bump, subscribe, spinnerCells, setThinking, clearSessionLive } = core
 
   const onTextDelta = api.event.on("session.next.text.delta", (evt) => {
     tracker.useV2Events = true
@@ -354,42 +454,9 @@ const tui: TuiPlugin = async (api, options) => {
     }
 
     const sessionID = info.sessionID ?? evt.properties.sessionID
-    if (!tracker.statsBySession[sessionID]) {
-      tracker.statsBySession[sessionID] = { totalOutputTokens: 0, totalDurationMs: 0, calibrationRatios: [] }
-    }
-    const stats = tracker.statsBySession[sessionID]!
-
-    const actualTokens = info.tokens.output + info.tokens.reasoning
-    const firstDelta = tracker.firstDeltaByMessage[info.id]
-    const lastDelta = tracker.lastDeltaByMessage[info.id]
-    const generationMs = firstDelta !== undefined && lastDelta !== undefined
-      ? Math.max(lastDelta - firstDelta, MIN_DURATION_MS) : 0
-
-    if (actualTokens > 0 && generationMs > 0) {
-      stats.totalOutputTokens += actualTokens
-      stats.totalDurationMs += generationMs
-
-      const estimated = tracker.estimatedTokensByMessage[info.id] ?? 0
-      if (estimated > 0) {
-        const ratio = Math.min(Math.max(actualTokens / estimated, 0.3), 3.0)
-        stats.calibrationRatios = [...stats.calibrationRatios, ratio].slice(-MAX_CALIBRATION_RATIOS)
-      }
-    }
-
-    delete tracker.estimatedTokensByMessage[info.id]
-    delete tracker.firstDeltaByMessage[info.id]
-    delete tracker.lastDeltaByMessage[info.id]
-    delete tracker.messageCreatedAt[info.id]
-    delete tracker.activeMessageBySession[sessionID]
-    delete tracker.samplesBySession[sessionID]
-    setThinking(sessionID, false)
+    recordMessageCompleted(core, { id: info.id, sessionID, tokens: info.tokens })
     bump()
   })
-
-  const clearSessionLive = (sessionID: string) => {
-    delete tracker.samplesBySession[sessionID]
-    setThinking(sessionID, false)
-  }
 
   const onToolInputStarted = api.event.on("session.next.tool.input.started", (evt) => {
     clearSessionLive(evt.properties.sessionID)
@@ -419,7 +486,7 @@ const tui: TuiPlugin = async (api, options) => {
     onTextDelta(); onReasoningDelta(); onPartDelta()
     onMessageUpdated(); onToolInputStarted(); onPartUpdated()
     clearInterval(timer)
-    if (spinnerTimer) clearInterval(spinnerTimer)
+    core.dispose()
   })
 
   api.slots.register({
@@ -427,11 +494,11 @@ const tui: TuiPlugin = async (api, options) => {
       session_prompt_right(_ctx, value) {
         return (
           <MeterDisplay
-            api={api}
+            requestRender={() => api.renderer.requestRender()}
             sessionID={value.session_id}
             tracker={tracker}
             config={config}
-            muted={muted}
+            palette={v1Palette(api.theme.current)}
             spinnerCells={spinnerCells}
             subscribe={subscribe}
           />
@@ -441,5 +508,95 @@ const tui: TuiPlugin = async (api, options) => {
   })
 }
 
-const plugin: TuiPluginModule & { id: string } = { id: "opencode-tps-meter", tui }
+const setup = async (ctx: V2Context): Promise<() => void> => {
+  const config = resolveConfig(ctx.options as PluginOptions | undefined)
+  const core = createMeterCore(config, ctx.theme.text.muted)
+  const { tracker, bump, subscribe, spinnerCells, setThinking, clearSessionLive } = core
+
+  const unsubs: (() => void)[] = []
+  const on = (type: string, handler: (event: V2Event) => void) => {
+    unsubs.push(ctx.data.on(type, handler))
+  }
+
+  on("session.step.started", (evt) => {
+    tracker.messageCreatedAt[evt.data.assistantMessageID] = evt.data.started
+  })
+
+  const onDelta = (thinking: boolean) => (evt: V2Event) => {
+    const { sessionID, assistantMessageID, delta } = evt.data
+    recordDelta(tracker, sessionID, assistantMessageID, evt.created, delta)
+    setThinking(sessionID, thinking)
+    bump()
+  }
+  on("session.text.delta", onDelta(false))
+  on("session.reasoning.delta", onDelta(true))
+
+  on("session.step.ended", (evt) => {
+    const { sessionID, assistantMessageID, tokens } = evt.data
+    if (tokens) recordMessageCompleted(core, { id: assistantMessageID, sessionID, tokens })
+    bump()
+  })
+
+  on("session.step.failed", (evt) => {
+    const { sessionID, assistantMessageID } = evt.data
+    delete tracker.messageCreatedAt[assistantMessageID]
+    delete tracker.estimatedTokensByMessage[assistantMessageID]
+    delete tracker.firstDeltaByMessage[assistantMessageID]
+    delete tracker.lastDeltaByMessage[assistantMessageID]
+    clearSessionLive(sessionID)
+    bump()
+  })
+
+  on("session.tool.input.started", (evt) => {
+    clearSessionLive(evt.data.sessionID)
+    bump()
+  })
+
+  const timer = setInterval(() => {
+    const now = Date.now()
+    const cutoff = now - WINDOW_MS
+    for (const [sid, samples] of Object.entries(tracker.samplesBySession)) {
+      const pruned = samples.filter((s) => s.at >= cutoff)
+      if (pruned.length > 0) tracker.samplesBySession[sid] = pruned
+      else delete tracker.samplesBySession[sid]
+    }
+    bump()
+  }, 1000)
+
+  const opts = (ctx.options ?? {}) as { slot?: string }
+  const slotPath = typeof opts.slot === "string" && opts.slot ? opts.slot : "prompt.footer.status"
+
+  ctx.ui.slot({
+    append: slotPath,
+    render(input) {
+      const sessionID = input.sessionID ?? (() => {
+        const r = ctx.ui.router.current()
+        return r.type === "session" ? r.sessionID : undefined
+      })()
+      return (
+        <MeterDisplay
+          requestRender={() => ctx.renderer.requestRender()}
+          sessionID={sessionID}
+          tracker={tracker}
+          config={config}
+          palette={v2Palette(ctx.theme)}
+          spinnerCells={spinnerCells}
+          subscribe={subscribe}
+        />
+      )
+    },
+  })
+
+  return () => {
+    for (const u of unsubs) u()
+    clearInterval(timer)
+    core.dispose()
+  }
+}
+
+const plugin: TuiPluginModule & { id: string; setup: typeof setup } = {
+  id: "opencode-tps-meter",
+  tui,
+  setup,
+}
 export default plugin
