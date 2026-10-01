@@ -8,6 +8,9 @@
     ".": {
       "import": "./tui.tsx"
     },
+    "./server": {
+      "import": "./server.ts"
+    },
     "./tui": {
       "import": "./tui.tsx"
     }
@@ -30,6 +33,7 @@
     "test:watch": "vitest"
   },
   "files": [
+    "server.ts",
     "tui.tsx",
     "README.md"
   ],
