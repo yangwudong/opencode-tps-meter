@@ -207,3 +207,382 @@ describe("calculateLiveTps", () => {
     expect(calculateLiveTps(samples, now, 1.0)).toBeCloseTo(15, 1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// v1.3.0: tracker semantics, options, rendering segments, scheduler
+// ---------------------------------------------------------------------------
+import { vi, beforeEach, afterEach } from "vitest"
+import * as M from "../measure.ts"
+
+const S = "ses_1"
+const delta = (t: M.TrackerState, messageID: string, kind: M.DeltaKind, at: number, text = "abcd", serverAt?: number) =>
+  M.recordDelta(t, { sessionID: S, messageID, kind, delta: text, at, serverAt })
+
+describe("speedTier / ttftTier (configurable)", () => {
+  it("accepts custom tiers", () => {
+    expect(M.speedTier(30, { slow: 10, normal: 20, fast: 40 })).toBe("fast")
+    expect(M.ttftTier(500, { fast: 1000, ok: 2000 })).toBe("fast")
+    expect(M.ttftTier(1500, { fast: 1000, ok: 2000 })).toBe("ok")
+    expect(M.ttftTier(15_000)).toBe("ok")
+    expect(M.ttftTier(25_000)).toBe("slow")
+  })
+})
+
+describe("estimateTokens without Buffer", () => {
+  it("counts surrogate pairs as 4 UTF-8 bytes", () => {
+    expect(M.utf8ByteLength("😀")).toBe(4)
+    expect(M.utf8ByteLength("é")).toBe(2)
+    expect(M.utf8ByteLength("日本語")).toBe(9)
+  })
+})
+
+describe("recordDelta", () => {
+  it("trims old samples in place (no copy) and keeps the window", () => {
+    const t = M.createTracker()
+    delta(t, "m1", "text", 0)
+    const arr = t.samplesBySession[S]
+    delta(t, "m1", "text", 3_000)
+    delta(t, "m1", "text", 6_000)
+    expect(t.samplesBySession[S]).toBe(arr)
+    expect(arr.map((s) => s.at)).toEqual([3_000, 6_000])
+  })
+
+  it("first delta sets TTFT from server time; later deltas do not overwrite it", () => {
+    const t = M.createTracker()
+    M.recordMessageStart(t, "m1", 1_000)
+    expect(delta(t, "m1", "text", 99_999, "a", 1_800)).toBe(true)
+    expect(t.liveTtftBySession[S]).toBe(800)
+    expect(delta(t, "m1", "text", 100_500, "a", 5_000)).toBe(false)
+    expect(t.liveTtftBySession[S]).toBe(800)
+  })
+
+  it("falls back to local time for TTFT when no serverAt (legacy path)", () => {
+    const t = M.createTracker()
+    M.recordMessageStart(t, "m1", 1_000)
+    delta(t, "m1", "text", 1_250)
+    expect(t.liveTtftBySession[S]).toBe(250)
+  })
+
+  it("sets thinking only for reasoning deltas", () => {
+    const t = M.createTracker()
+    delta(t, "m1", "reasoning", 0)
+    expect(t.thinkingBySession[S]).toBe(true)
+    delta(t, "m1", "tool", 10)
+    expect(t.thinkingBySession[S]).toBeUndefined()
+    delta(t, "m1", "reasoning", 20)
+    delta(t, "m1", "text", 30)
+    expect(M.anyThinking(t)).toBe(false)
+  })
+
+  it("recordMessageStart is idempotent and reports new steps", () => {
+    const t = M.createTracker()
+    expect(M.recordMessageStart(t, "m1", 100)).toBe(true)
+    delta(t, "m1", "text", 500)
+    expect(M.recordMessageStart(t, "m1", 200)).toBe(false)
+    expect(t.messages.m1.createdAt).toBe(100)
+    expect(t.messages.m1.firstAt).toBe(500)
+  })
+})
+
+describe("recordMessageCompleted — AVG / calibration rules", () => {
+  it("tool input deltas count toward the generation window (no AVG inflation)", () => {
+    const t = M.createTracker()
+    M.recordMessageStart(t, "m1", 0)
+    delta(t, "m1", "text", 0, "x".repeat(32)) // ~8 tok
+    for (let i = 0; i < 40; i++) delta(t, "m1", "tool", 100 + i * 97.5, "x".repeat(200)) // ~2000 tok, until ~3.9s
+    delta(t, "m1", "tool", 4_000, "x".repeat(4))
+    M.recordMessageCompleted(t, { id: "m1", sessionID: S, tokens: { output: 2008, reasoning: 0 }, finish: "tool-calls" })
+    expect(M.avgTps(t, S)).toBeCloseTo(2008 / 4, 0)
+    const ratio = t.statsBySession[S].calibrationRatios[0]
+    expect(ratio).toBeGreaterThan(0.9)
+    expect(ratio).toBeLessThan(1.1)
+  })
+
+  it("legacy fallback: tool-calls step with no tool deltas is excluded from AVG and calibration", () => {
+    const t = M.createTracker()
+    delta(t, "m1", "text", 0, "x".repeat(32))
+    M.recordMessageCompleted(t, { id: "m1", sessionID: S, tokens: { output: 2008, reasoning: 0 }, finish: "tool-calls" })
+    expect(M.avgTps(t, S)).toBeUndefined()
+    expect(t.statsBySession[S].calibrationRatios).toEqual([])
+  })
+
+  it("legacy fallback: a running tool part (toolPartSeen) also excludes the step", () => {
+    const t = M.createTracker()
+    delta(t, "m1", "text", 0, "x".repeat(32))
+    M.recordToolBoundary(t, "m1")
+    M.recordMessageCompleted(t, { id: "m1", sessionID: S, tokens: { output: 500, reasoning: 0 } })
+    expect(M.avgTps(t, S)).toBeUndefined()
+  })
+
+  it("reasoning tokens are excluded when no reasoning delta was streamed", () => {
+    const t = M.createTracker()
+    delta(t, "m1", "text", 0, "x".repeat(400))
+    delta(t, "m1", "text", 2_000, "x".repeat(400))
+    M.recordMessageCompleted(t, { id: "m1", sessionID: S, tokens: { output: 200, reasoning: 5000 }, finish: "stop" })
+    expect(M.avgTps(t, S)).toBeCloseTo(100, 5)
+  })
+
+  it("reasoning tokens are included when reasoning was streamed", () => {
+    const t = M.createTracker()
+    delta(t, "m1", "reasoning", 0)
+    delta(t, "m1", "text", 2_000)
+    M.recordMessageCompleted(t, { id: "m1", sessionID: S, tokens: { output: 100, reasoning: 100 } })
+    expect(M.avgTps(t, S)).toBeCloseTo(100, 5)
+  })
+
+  it("clamps the duration to MIN_DURATION_MS and caps calibration history", () => {
+    const t = M.createTracker()
+    for (let i = 0; i < 12; i++) {
+      delta(t, `m${i}`, "text", i * 10_000, "abcd")
+      M.recordMessageCompleted(t, { id: `m${i}`, sessionID: S, tokens: { output: 10, reasoning: 0 } })
+    }
+    expect(t.statsBySession[S].totalDurationMs).toBe(12 * M.MIN_DURATION_MS)
+    expect(t.statsBySession[S].calibrationRatios).toHaveLength(M.MAX_CALIBRATION_RATIOS)
+    expect(t.statsBySession[S].calibrationRatios.every((r) => r === 3.0)).toBe(true)
+  })
+
+  it("only clears live state when the completing message is the active one", () => {
+    const t = M.createTracker()
+    delta(t, "old", "text", 0)
+    delta(t, "new", "reasoning", 100)
+    M.recordMessageCompleted(t, { id: "old", sessionID: S, tokens: { output: 5, reasoning: 0 } })
+    expect(t.samplesBySession[S]).toHaveLength(2)
+    expect(t.thinkingBySession[S]).toBe(true)
+    M.recordMessageCompleted(t, { id: "new", sessionID: S, tokens: { output: 5, reasoning: 5 } })
+    expect(t.samplesBySession[S]).toBeUndefined()
+    expect(t.thinkingBySession[S]).toBeUndefined()
+    expect(t.messages).toEqual({})
+  })
+
+  it("discardMessage drops a failed step without touching stats", () => {
+    const t = M.createTracker()
+    delta(t, "m1", "text", 0)
+    M.discardMessage(t, "m1")
+    expect(t.messages.m1).toBeUndefined()
+    expect(t.activeMessageBySession[S]).toBeUndefined()
+    expect(t.statsBySession[S]).toBeUndefined()
+  })
+})
+
+describe("prune", () => {
+  it("drops samples outside the window and reports liveness", () => {
+    const t = M.createTracker()
+    delta(t, "m1", "text", 0)
+    delta(t, "m1", "text", 1_000)
+    expect(M.prune(t, 5_500)).toBe(true)
+    expect(t.samplesBySession[S]).toHaveLength(1)
+    M.clearSessionLive(t, S)
+    expect(M.prune(t, 7_000)).toBe(false)
+    expect(t.samplesBySession[S]).toBeUndefined()
+  })
+
+  it("turns off stale thinking (interrupted stream fallback)", () => {
+    const t = M.createTracker()
+    delta(t, "m1", "reasoning", 0)
+    expect(M.prune(t, 1_000)).toBe(true)
+    expect(t.thinkingBySession[S]).toBe(true)
+    expect(M.prune(t, M.THINKING_STALE_MS + 1)).toBe(false)
+    expect(t.thinkingBySession[S]).toBeUndefined()
+  })
+})
+
+describe("message tracking cap", () => {
+  it("evicts the oldest message past MAX_TRACKED_MESSAGES", () => {
+    const t = M.createTracker()
+    for (let i = 0; i <= M.MAX_TRACKED_MESSAGES; i++) M.recordMessageStart(t, `m${i}`, i)
+    expect(Object.keys(t.messages)).toHaveLength(M.MAX_TRACKED_MESSAGES)
+    expect(t.messages.m0).toBeUndefined()
+    expect(t.messages[`m${M.MAX_TRACKED_MESSAGES}`]).toBeDefined()
+  })
+})
+
+describe("resolveOptions", () => {
+  it("returns sane defaults", () => {
+    const o = M.resolveOptions(undefined)
+    expect(o.spinner).toEqual({ colors: M.THEME_PRESETS.tech, intervalMs: 100, enabled: true, cells: 6 })
+    expect(o.tps).toEqual(M.DEFAULT_TPS_TIERS)
+    expect(o.ttft).toEqual(M.DEFAULT_TTFT_TIERS)
+    expect(o.slot).toBe("prompt.footer.status")
+  })
+
+  it("clamps intervalMs to [40, 1000] and cells to [2, 16] integers", () => {
+    expect(M.resolveOptions({ spinner: { intervalMs: 1 } }).spinner.intervalMs).toBe(40)
+    expect(M.resolveOptions({ spinner: { intervalMs: 99_999 } }).spinner.intervalMs).toBe(1000)
+    expect(M.resolveOptions({ spinner: { intervalMs: "fast" } }).spinner.intervalMs).toBe(100)
+    expect(M.resolveOptions({ spinner: { cells: 1 } }).spinner.cells).toBe(2)
+    expect(M.resolveOptions({ spinner: { cells: 500 } }).spinner.cells).toBe(16)
+    expect(M.resolveOptions({ spinner: { cells: 7.9 } }).spinner.cells).toBe(7)
+  })
+
+  it("filters invalid hex colors and falls back to the theme preset", () => {
+    expect(M.resolveOptions({ spinner: { colors: ["#fff", "nope", "#12345678", 3] } }).spinner.colors).toEqual(["#fff", "#12345678"])
+    expect(M.resolveOptions({ spinner: { theme: "red", colors: ["zzz", "#12"] } }).spinner.colors).toEqual(M.THEME_PRESETS.red)
+  })
+
+  it("handles themes: unknown → tech, none → disabled", () => {
+    expect(M.resolveOptions({ spinner: { theme: "weird" } }).spinner.colors).toEqual(M.THEME_PRESETS.tech)
+    expect(M.resolveOptions({ spinner: { theme: "none" } }).spinner.enabled).toBe(false)
+    expect(M.resolveOptions({ spinner: { enabled: false } }).spinner.enabled).toBe(false)
+  })
+
+  it("accepts valid tiers, rejects non-ascending or non-positive ones", () => {
+    expect(M.resolveOptions({ tiers: { tps: { slow: 5, normal: 10, fast: 15 } } }).tps).toEqual({ slow: 5, normal: 10, fast: 15 })
+    expect(M.resolveOptions({ tiers: { tps: { slow: 50, normal: 10 } } }).tps).toEqual(M.DEFAULT_TPS_TIERS)
+    expect(M.resolveOptions({ tiers: { tps: { slow: -1 } } }).tps).toEqual(M.DEFAULT_TPS_TIERS)
+    expect(M.resolveOptions({ tiers: { ttft: { fast: 3000, ok: 1000 } } }).ttft).toEqual(M.DEFAULT_TTFT_TIERS)
+    expect(M.resolveOptions({ tiers: { ttft: { fast: 500 } } }).ttft).toEqual({ fast: 500, ok: 20_000 })
+  })
+
+  it("validates slot", () => {
+    expect(M.resolveOptions({ slot: "  " }).slot).toBe("prompt.footer.status")
+    expect(M.resolveOptions({ slot: "home.footer" }).slot).toBe("home.footer")
+  })
+})
+
+describe("buildSegments", () => {
+  const opts = M.resolveOptions(undefined)
+  const text = (segs: M.Segment[]) => segs.map((s) => s.text).join("")
+
+  it("renders the idle line exactly (no trailing space)", () => {
+    const t = M.createTracker()
+    expect(text(M.buildSegments(t, undefined, 0, opts))).toBe(M.IDLE_TEXT)
+    expect(text(M.buildSegments(t, S, 0, opts, M.createSpinner(6)))).toBe(M.IDLE_TEXT)
+  })
+
+  it("colors values by tier", () => {
+    const t = M.createTracker()
+    M.recordMessageStart(t, "m1", 0)
+    delta(t, "m1", "text", 0, "x".repeat(400), 500) // 100 tok/s, TTFT 0.5s
+    const segs = M.buildSegments(t, S, 1_000, opts)
+    expect(text(segs)).toBe("TPS 100 | AVG -- | TTFT 0.5s")
+    expect(segs.find((s) => s.text === "100")?.color).toBe("accent")
+    expect(segs.find((s) => s.text === "0.5s")?.color).toBe("success")
+  })
+
+  it("appends per-cell colored particles while thinking", () => {
+    const t = M.createTracker()
+    delta(t, "m1", "reasoning", 0)
+    const sp = M.createSpinner(6, () => 0.5)
+    const segs = M.buildSegments(t, S, 100, opts, sp)
+    const cells = segs.filter((s) => typeof s.color !== "string")
+    expect(cells).toHaveLength(6)
+    expect(new Set(cells.map((c) => M.colorKey(c.color))).size).toBe(6)
+    expect(text(segs).startsWith("TPS ")).toBe(true)
+    expect(text(segs)).toBe("TPS 1.00 | AVG -- | TTFT -- " + sp.glyphs.join(""))
+  })
+
+  it("hides particles when the spinner is disabled", () => {
+    const t = M.createTracker()
+    delta(t, "m1", "reasoning", 0)
+    const segs = M.buildSegments(t, S, 100, M.resolveOptions({ spinner: { theme: "none" } }), M.createSpinner(6))
+    expect(segs.every((s) => typeof s.color === "string")).toBe(true)
+  })
+
+  it("segmentsKey is stable for identical content", () => {
+    const t = M.createTracker()
+    expect(M.segmentsKey(M.buildSegments(t, S, 0, opts))).toBe(M.segmentsKey(M.buildSegments(t, S, 0, opts)))
+  })
+})
+
+describe("createScheduler", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+  })
+  afterEach(() => vi.useRealTimers())
+
+  const setup = (raw?: unknown) => {
+    const opts = M.resolveOptions(raw)
+    const t = M.createTracker()
+    const sp = M.createSpinner(opts.spinner.cells)
+    return { t, sp, s: M.createScheduler(t, opts, sp) }
+  }
+
+  it("has no timer when idle and stops after the stream goes quiet", () => {
+    const { t, s } = setup()
+    let flushes = 0
+    s.addView(() => flushes++)
+    s.markDirty()
+    expect(s.timerPeriod()).toBeUndefined()
+
+    delta(t, "m1", "text", Date.now())
+    s.markDirty()
+    expect(s.timerPeriod()).toBe(M.IDLE_TICK_MS)
+    vi.advanceTimersByTime(M.WINDOW_MS + 2 * M.IDLE_TICK_MS)
+    expect(s.timerPeriod()).toBeUndefined()
+    expect(flushes).toBeGreaterThan(0)
+    const settled = flushes
+    vi.advanceTimersByTime(10_000)
+    expect(flushes).toBe(settled)
+  })
+
+  it("throttles bursts: many deltas do not flush synchronously", () => {
+    const { t, s } = setup()
+    let flushes = 0
+    s.addView(() => flushes++)
+    for (let i = 0; i < 500; i++) {
+      delta(t, "m1", "text", Date.now())
+      s.markDirty()
+    }
+    expect(flushes).toBe(0)
+    vi.advanceTimersByTime(M.IDLE_TICK_MS)
+    expect(flushes).toBe(1)
+  })
+
+  it("urgent markDirty flushes immediately", () => {
+    const { t, s } = setup()
+    let flushes = 0
+    s.addView(() => flushes++)
+    s.markDirty(delta(t, "m1", "text", Date.now()))
+    expect(flushes).toBe(1)
+  })
+
+  it("runs at the spinner interval while thinking and advances frames", () => {
+    const { t, sp, s } = setup({ spinner: { intervalMs: 50 } })
+    s.addView(() => {})
+    delta(t, "m1", "reasoning", Date.now())
+    s.markDirty()
+    expect(s.timerPeriod()).toBe(50)
+    vi.advanceTimersByTime(500)
+    expect(sp.frame).toBe(10)
+    delta(t, "m1", "text", Date.now())
+    s.markDirty()
+    expect(s.timerPeriod()).toBe(M.IDLE_TICK_MS)
+  })
+
+  it("does not spin when the spinner is disabled", () => {
+    const { t, s } = setup({ spinner: { theme: "none" } })
+    delta(t, "m1", "reasoning", Date.now())
+    s.markDirty()
+    expect(s.timerPeriod()).toBe(M.IDLE_TICK_MS)
+  })
+
+  it("removes a throwing view without affecting the others", () => {
+    const { t, s } = setup()
+    let good = 0
+    s.addView(() => {
+      throw new Error("TextBuffer is destroyed")
+    })
+    s.addView(() => good++)
+    expect(s.viewCount()).toBe(2)
+    s.markDirty(delta(t, "m1", "text", Date.now()))
+    expect(good).toBe(1)
+    expect(s.viewCount()).toBe(1)
+    expect(() => vi.advanceTimersByTime(M.IDLE_TICK_MS)).not.toThrow()
+    expect(good).toBe(2)
+  })
+
+  it("dispose stops the timer and ignores later events", () => {
+    const { t, s } = setup()
+    let flushes = 0
+    s.addView(() => flushes++)
+    delta(t, "m1", "text", Date.now())
+    s.markDirty()
+    s.dispose()
+    expect(s.timerPeriod()).toBeUndefined()
+    expect(s.viewCount()).toBe(0)
+    s.markDirty(true)
+    vi.advanceTimersByTime(10_000)
+    expect(flushes).toBe(0)
+  })
+})

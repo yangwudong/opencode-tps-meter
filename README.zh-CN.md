@@ -21,7 +21,7 @@ TPS 42.5 | AVG 38.2 | TTFT 0.8s ⠒⠑⠂
 - **TPS** — 当前每秒 token 数（实时跳动，带颜色）
 - **AVG** — 整个会话的累计平均速度（消息完成后更新，带颜色）
 - **TTFT** — 首个 token 的等待时间，第一个 token 到达即显示，保留到下次生成（带颜色）
-- **思考粒子条** — 推理流式输出时，TTFT 右侧出现一个 FIFO 粒子流（左侧最新、向右渐暗，颜色随时间渐变）。仅在思考时渲染，空闲时不占位。
+- **思考粒子条** — 推理流式输出时，TTFT 右侧出现一个 FIFO 粒子流（左侧最新、向右渐暗，颜色随时间渐变）。每一格单独着色（渐变淡出到 muted）。仅在思考时渲染，空闲时不占位。
 
 ## 颜色等级
 
@@ -159,11 +159,13 @@ curl -o ~/.config/opencode/tps-meter.tsx https://raw.githubusercontent.com/yangw
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
 | `spinner.theme` | `"tech"` | 配色预设：`"tech"`（青→蓝→紫）或 `"red"`（KITT 风格红）。`"none"` 关闭思考粒子流。 |
-| `spinner.colors` | _随 theme_ | 自定义渐变（十六进制字符串数组）；覆盖 theme。 |
-| `spinner.intervalMs` | `100` | 粒子流帧间隔（毫秒）。 |
-| `spinner.cells` | `6` | 粒子流格数（宽度）。 |
+| `spinner.colors` | _随 theme_ | 自定义渐变（十六进制字符串 `#rgb` / `#rrggbb` / `#rrggbbaa`）；覆盖 theme。无效项会被忽略。 |
+| `spinner.intervalMs` | `100` | 粒子流帧间隔（毫秒），限制在 40–1000。 |
+| `spinner.cells` | `6` | 粒子流格数（宽度），限制在 2–16。 |
 | `tiers.tps` | `{20,50,100}` | TPS/AVG 阈值（慢/正常/快，单位 TPS）；超过 fast 为"很快"。 |
 | `tiers.ttft` | `{10000,20000}` | TTFT 阈值（毫秒，快/正常）；超过 ok 为"慢"。 |
+
+阈值必须为正数且递增，否则使用默认值。
 | `slot` | `"prompt.footer.status"` | 仅 opencode 2.x：仪表渲染到的 TUI slot。 |
 
 > 一条命令安装（`opencode plugin ...`）使用默认值；如需自定义，改用上面的元组/对象形式。
@@ -172,17 +174,21 @@ curl -o ~/.config/opencode/tps-meter.tsx https://raw.githubusercontent.com/yangw
 
 ### 实时 TPS
 
-在 5 秒滚动窗口内追踪文本/推理的 delta 事件。使用壁钟时长（`当前时间 - 最早样本时间`）而非间隔时间累加，避免网络批量传输导致的 TPS 虚高。
+在 5 秒滚动窗口内追踪文本、推理和工具参数的 delta 事件（模型通过工具调用写大文件时也有速度显示）。使用壁钟时长（`当前时间 - 最早样本时间`）而非间隔时间累加，避免网络批量传输导致的 TPS 虚高。
 
-Token 估算使用 `ceil(字节数 / 4)`，并带有**校准因子**：消息完成时，将估算的 token 数与实际的 `tokens.output + tokens.reasoning` 对比，用中位数比率自动修正后续估算。
+Token 估算使用 `ceil(字节数 / 4)`，并带有**校准因子**：消息完成时，将估算的 token 数与实际的 `tokens.output`（推理确实流式输出时再加上 `tokens.reasoning`）对比，用中位数比率自动修正后续估算。
 
 ### AVG
 
-所有已完成消息的会话级累计平均值：`总实际 token 数 / 总生成时长`。消息完成时更新。生成时长 = 每条消息的 `最后 delta - 首个 delta`（不含工具执行时间和 TTFT）。
+所有已完成消息的会话级累计平均值：`总实际 token 数 / 总生成时长`。消息完成时更新。生成时长 = 每个 step 的 `最后 delta - 首个 delta`，delta 包括文本、推理和工具调用参数（不含工具执行时间和 TTFT）。
+
+为避免数值虚高：
+- 只有推理内容确实流式输出时才计入 reasoning token（有些模型只上报 reasoning token 而不流式输出推理）；
+- 发起了工具调用、但工具参数没有流式输出的 step（旧版 opencode）直接不计入 AVG 和校准，而不是去猜。
 
 ### TTFT
 
-从消息创建（`info.time.created`）到第一个文本/推理 delta 的时间。第一个 token 到达时立即显示，保留到下次生成开始。
+从 step 开始（`info.time.created`）到第一个输出 delta（文本、推理或工具参数）的时间。第一个 token 到达时立即显示，保留到下次生成开始。
 
 ## 开发
 
@@ -190,10 +196,11 @@ Token 估算使用 `ceil(字节数 / 4)`，并带有**校准因子**：消息完
 git clone https://github.com/yangwudong/opencode-tps-meter.git
 cd opencode-tps-meter
 npm install
-npm test
+npm test            # 单元测试
+npm run typecheck   # tsc，应为 0 错误
 ```
 
-纯计算函数（`measure.ts`）有 29 个单元测试。TUI 插件（`tui.tsx`）是独立的单文件（所有函数内联），可直接部署。
+纯计算逻辑在 `measure.ts`（67 个单元测试）。TUI 插件（`tui.tsx`）是独立的单文件，可直接部署；它内嵌了一份完全相同的纯计算区——修改 `measure.ts` 后运行 `npm run sync-region`（两份不一致时 `test/sync.test.ts` 会失败）。
 
 ## 环境要求
 
@@ -201,4 +208,4 @@ npm test
 
 ## 许可证
 
-MIT
+[MIT](./LICENSE)

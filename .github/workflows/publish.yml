@@ -3,7 +3,6 @@ name: Publish
 on:
   release:
     types: [published]
-  workflow_dispatch:
 
 permissions:
   id-token: write
@@ -24,5 +23,7 @@ jobs:
       - run: npm ci
 
       - run: npm test
+
+      - run: npm run typecheck
 
       - run: npm publish

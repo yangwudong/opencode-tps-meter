@@ -21,7 +21,7 @@ TPS 42.5 | AVG 38.2 | TTFT 0.8s ⠒⠑⠂
 - **TPS** — current tokens per second (live, color-coded)
 - **AVG** — session-wide cumulative average from completed messages (color-coded)
 - **TTFT** — time to first token, shown immediately on first token, persists until next generation (color-coded)
-- **Thinking stream** — while reasoning streams, a FIFO particle stream (newest dot on the left, fading right, color shifts over time) appears to the right of TTFT. Only rendered while thinking — no space is reserved when idle.
+- **Thinking stream** — while reasoning streams, a FIFO particle stream (newest dot on the left, fading right, color shifts over time) appears to the right of TTFT. Each cell has its own color (a gradient fading to muted). Only rendered while thinking — no space is reserved when idle.
 
 ## Color Tiers
 
@@ -159,28 +159,34 @@ All options are optional — defaults are sane.
 | Option | Default | Description |
 |---|---|---|
 | `spinner.theme` | `"tech"` | Color preset: `"tech"` (cyan→blue→purple) or `"red"` (KITT-style red). `"none"` disables the thinking stream. |
-| `spinner.colors` | _from theme_ | Custom gradient (hex strings); overrides `theme`. |
-| `spinner.intervalMs` | `100` | Particle stream frame interval (ms). |
-| `spinner.cells` | `6` | Number of cells (width) of the thinking stream. |
+| `spinner.colors` | _from theme_ | Custom gradient (hex strings `#rgb` / `#rrggbb` / `#rrggbbaa`); overrides `theme`. Invalid entries are ignored. |
+| `spinner.intervalMs` | `100` | Particle stream frame interval (ms), clamped to 40–1000. |
+| `spinner.cells` | `6` | Number of cells (width) of the thinking stream, clamped to 2–16. |
 | `tiers.tps` | `{20,50,100}` | TPS/AVG thresholds (slow/normal/fast, in TPS); above `fast` is "faster". |
 | `tiers.ttft` | `{10000,20000}` | TTFT thresholds in ms (fast/ok); above `ok` is "slow". |
+
+Tier values must be positive and ascending; otherwise the defaults are used.
 | `slot` | `"prompt.footer.status"` | opencode 2.x only: which TUI slot the meter renders into. |
 
 ## How It Works
 
 ### Live TPS
 
-Tracks text/reasoning delta events in a rolling 5-second window. Uses wall-clock duration (`now - oldest sample`) instead of inter-arrival time sums to avoid inflation from network buffering.
+Tracks text, reasoning and tool-argument delta events in a rolling 5-second window (so a model writing a large file through a tool call still shows a speed). Uses wall-clock duration (`now - oldest sample`) instead of inter-arrival time sums to avoid inflation from network buffering.
 
-Token estimation uses `ceil(byteLength / 4)` with a **calibration factor**: when a message completes, the estimated token count is compared against actual `tokens.output + tokens.reasoning` from the message metadata, and a running median ratio corrects future estimates.
+Token estimation uses `ceil(byteLength / 4)` with a **calibration factor**: when a message completes, the estimated token count is compared against the actual `tokens.output` (+ `tokens.reasoning` when reasoning was streamed) from the message metadata, and a running median ratio corrects future estimates.
 
 ### AVG
 
-Session-wide cumulative average from all completed messages: `sum(actual tokens) / sum(generation durations)`. Updates when a message completes. Generation duration = `last delta - first delta` per message (excludes tool execution time and TTFT).
+Session-wide cumulative average from all completed messages: `sum(actual tokens) / sum(generation durations)`. Updates when a message completes. Generation duration = `last delta - first delta` per step, where deltas include text, reasoning and tool-call arguments (excludes tool execution time and TTFT).
+
+To avoid inflated numbers:
+- reasoning tokens are only counted when the reasoning was actually streamed (some models report reasoning tokens without streaming them);
+- a step that made tool calls but whose arguments were not streamed (older opencode versions) is excluded from AVG and calibration instead of being guessed.
 
 ### TTFT
 
-Time from message creation (`info.time.created`) to the first text/reasoning delta. Displayed immediately when the first token arrives, and persists until the next generation starts.
+Time from step start (`info.time.created`) to the first output delta (text, reasoning or tool arguments). Displayed immediately when the first token arrives, and persists until the next generation starts.
 
 ## Development
 
@@ -188,10 +194,11 @@ Time from message creation (`info.time.created`) to the first text/reasoning del
 git clone https://github.com/yangwudong/opencode-tps-meter.git
 cd opencode-tps-meter
 npm install
-npm test
+npm test            # unit tests
+npm run typecheck   # tsc, 0 errors expected
 ```
 
-Pure measurement functions (`measure.ts`) have 29 unit tests. The TUI plugin (`tui.tsx`) is a standalone single file (all functions inline) for direct deployment.
+Pure measurement logic lives in `measure.ts` (67 unit tests). The TUI plugin (`tui.tsx`) is a standalone single file for direct deployment; it embeds an identical copy of the pure region — edit `measure.ts`, then run `npm run sync-region` (`test/sync.test.ts` fails if they drift).
 
 ## Requirements
 
@@ -199,4 +206,4 @@ Pure measurement functions (`measure.ts`) have 29 unit tests. The TUI plugin (`t
 
 ## License
 
-MIT
+[MIT](./LICENSE)
